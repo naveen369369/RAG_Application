@@ -45,7 +45,7 @@ logging.basicConfig(
 
 BANNER = """
 ╔══════════════════════════════════════════════════════════════╗
-║           RAG Application  |  Pinecone + Groq + ST           ║
+║                       RAG Application                        ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -131,6 +131,10 @@ def run_query(
     if result.get("scores"):
         print(f"\n[i] Retrieval scores: {result['scores']}")
 
+    # Print hit rate
+    if result.get("hit_rate"):
+        print_hit_rate(result["hit_rate"], result.get("scores", []))
+
     # Print sources if requested
     if show_sources and result.get("sources"):
         print("\n[Sources]")
@@ -139,6 +143,51 @@ def run_query(
             print(f"      Preview: {src['text'][:150]}...")
 
     print()
+
+
+# ---------------------------------------------------------------------------
+# Hit Rate Display
+# ---------------------------------------------------------------------------
+
+def print_hit_rate(hit_rate: dict, scores: list) -> None:
+    """
+    Pretty-print hit rate statistics for a retrieval query.
+
+    A 'hit' is any retrieved chunk whose similarity score meets or
+    exceeds the configured threshold (default: 0.5).
+
+    Args:
+        hit_rate (dict): Dict with keys 'hits', 'total', 'threshold', 'rate'.
+        scores (list): Raw similarity scores for each retrieved chunk.
+    """
+    hits      = hit_rate.get("hits", 0)
+    total     = hit_rate.get("total", 0)
+    threshold = hit_rate.get("threshold", 0.5)
+    rate      = hit_rate.get("rate", 0.0)
+
+    # Build a mini bar: filled blocks = hits, empty = misses
+    bar_width = total if total > 0 else 1
+    filled    = "#" * hits
+    empty     = "." * (total - hits)
+    bar       = filled + empty
+
+    pct = rate * 100
+
+    print("\n+" + "-" * 59 + "+")
+    print(f"|  [Hit Rate]  Threshold: score >= {threshold:<6}                        |")
+    print(f"|  Result : {hits}/{total} chunks hit  [{bar:<{bar_width}}]  {pct:5.1f}%                |")
+
+    # Per-chunk score line
+    score_labels = []
+    for i, s in enumerate(scores, 1):
+        marker = "[Y]" if s >= threshold else "[N]"
+        score_labels.append(f"  chunk-{i}: {s:.4f} {marker}")
+
+    print("|  Scores :" + "                                                  |")
+    for label in score_labels:
+        print(f"|    {label:<55} |")
+
+    print("+" + "-" * 59 + "+")
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +245,10 @@ def run_chat(pipeline: RAGPipeline) -> None:
         for token in result["answer"]:
             print(token, end="", flush=True)
         print()  # Newline after streamed output
+
+        # Show hit rate after every answer
+        if result.get("hit_rate"):
+            print_hit_rate(result["hit_rate"], result.get("scores", []))
 
         if show_sources and result.get("sources"):
             print("\n[Sources]")

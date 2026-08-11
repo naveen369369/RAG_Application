@@ -62,6 +62,7 @@ class RAGPipeline:
         chunk_size: int = None,
         chunk_overlap: int = None,
         top_k: int = None,
+        hit_threshold: float = None,
     ):
         """
         Initialize all RAG pipeline components.
@@ -73,10 +74,14 @@ class RAGPipeline:
                 Defaults to CHUNK_OVERLAP from .env or 50.
             top_k (int, optional): Number of retrieved results per query.
                 Defaults to TOP_K_RESULTS from .env or 5.
+            hit_threshold (float, optional): Minimum similarity score to count
+                a retrieved chunk as a "hit". Defaults to HIT_THRESHOLD from
+                .env or 0.5.
         """
         self.chunk_size = chunk_size or int(os.getenv("CHUNK_SIZE", 500))
         self.chunk_overlap = chunk_overlap or int(os.getenv("CHUNK_OVERLAP", 50))
         self.top_k = top_k or int(os.getenv("TOP_K_RESULTS", 5))
+        self.hit_threshold = hit_threshold or float(os.getenv("HIT_THRESHOLD", 0.5))
 
         logger.info("Initializing RAG Pipeline components...")
 
@@ -455,6 +460,12 @@ class RAGPipeline:
                 "answer": "I couldn't find relevant context to answer your question.",
                 "sources": [],
                 "scores": [],
+                "hit_rate": {
+                    "hits": 0,
+                    "total": 0,
+                    "threshold": self.hit_threshold,
+                    "rate": 0.0,
+                },
             }
 
         # Generate answer
@@ -465,11 +476,22 @@ class RAGPipeline:
             stream=stream,
         )
 
+        # Compute hit rate — a chunk is a "hit" if its score >= hit_threshold
+        scores = [round(m.get("score", 0), 4) for m in matches]
+        hits = sum(1 for s in scores if s >= self.hit_threshold)
+        hit_rate_info = {
+            "hits": hits,
+            "total": len(scores),
+            "threshold": self.hit_threshold,
+            "rate": round(hits / len(scores), 4) if scores else 0.0,
+        }
+
         # Build result
         result = {
             "question": question,
             "answer": answer,
-            "scores": [round(m.get("score", 0), 4) for m in matches],
+            "scores": scores,
+            "hit_rate": hit_rate_info,
         }
 
         if return_sources:

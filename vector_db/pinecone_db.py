@@ -56,7 +56,7 @@ class PineconeDB:
 
         self.index_name = index_name or os.getenv("PINECONE_INDEX_NAME", "rag-index")
         self.dimension = dimension
-
+    
         # Initialize Pinecone client (v3+ API)
         self.pc = Pinecone(api_key=self.api_key)
         self.index = self._get_or_create_index()
