@@ -23,7 +23,6 @@ import csv
 import json
 import logging
 
-logging.disable(logging.CRITICAL)
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
@@ -506,12 +505,3 @@ class RAGPipeline:
             ]
 
         return result
-
-    def get_index_stats(self) -> Dict[str, Any]:
-        """
-        Return statistics about the Pinecone index.
-
-        Returns:
-            Dict: Vector count, namespace info, and dimension details.
-        """
-        return self.vector_db.get_index_stats()

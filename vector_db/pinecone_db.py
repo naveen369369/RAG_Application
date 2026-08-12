@@ -8,7 +8,6 @@ index creation, upserting vectors, and performing similarity searches.
 import os
 import logging
 
-logging.disable(logging.CRITICAL)
 from typing import List, Dict, Any, Optional
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
@@ -168,14 +167,3 @@ class PineconeDB:
         """Delete the current Pinecone index entirely."""
         self.pc.delete_index(self.index_name)
         logger.info(f"Index '{self.index_name}' deleted.")
-
-    def get_index_stats(self) -> Dict[str, Any]:
-        """
-        Retrieve statistics about the current index.
-
-        Returns:
-            Dict: Index statistics including vector count and dimension.
-        """
-        stats = self.index.describe_index_stats()
-        logger.info(f"Index stats: {stats}")
-        return stats

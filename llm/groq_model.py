@@ -9,7 +9,6 @@ and a user query, with configurable model and generation parameters.
 import os
 import logging
 
-logging.disable(logging.CRITICAL)
 from typing import List, Dict, Optional
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv

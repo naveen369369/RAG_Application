@@ -9,7 +9,6 @@ and semantic similarity search in the vector database.
 import os
 import logging
 
-logging.disable(logging.CRITICAL)
 from typing import List, Union
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
@@ -43,7 +42,7 @@ class EmbeddingModel:
         )
         logger.info(f"Loading embedding model: {self.model_name}")
         self.model = SentenceTransformer(self.model_name)
-        self.dimension = self.model.get_sentence_embedding_dimension()
+        self.dimension = self.model.get_embedding_dimension()
         logger.info(
             f"Embedding model loaded. Dimension: {self.dimension}"
         )
