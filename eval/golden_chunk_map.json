@@ -1,0 +1,62 @@
+{
+  "Q1": {
+    "question": "What should I do if my account gets locked after multiple failed login attempts?",
+    "namespace": "Account Management & Login Issues",
+    "correct_chunk_id": "chunk-5"
+  },
+  "Q2": {
+    "question": "What is the difference between account deactivation and permanent account deletion?",
+    "namespace": "Account Management & Login Issues",
+    "correct_chunk_id": "chunk-20"
+  },
+  "Q3": {
+    "question": "Why do I see two charges on my bank statement for the same order?",
+    "namespace": "Billing & Payment Support",
+    "correct_chunk_id": "chunk-16"
+  },
+  "Q4": {
+    "question": "How long does a refund take to appear after it is approved?",
+    "namespace": "Billing & Payment Support",
+    "correct_chunk_id": "chunk-15"
+  },
+  "Q5": {
+    "question": "Can I return an electronic item that I have already opened?",
+    "namespace": "Product Returns & Refund Policy",
+    "correct_chunk_id": "chunk-1"
+  },
+  "Q6": {
+    "question": "What happens if I receive a damaged item? Do I need to ship it back?",
+    "namespace": "Product Returns & Refund Policy",
+    "correct_chunk_id": "chunk-25"
+  },
+  "Q7": {
+    "question": "What does error code ERR-1001 mean and how do I fix it?",
+    "namespace": "Technical Troubleshooting Guide",
+    "correct_chunk_id": "chunk-10"
+  },
+  "Q8": {
+    "question": "My app keeps crashing on mobile. What steps should I follow to fix it?",
+    "namespace": "Technical Troubleshooting Guide",
+    "correct_chunk_id": "chunk-14"
+  },
+  "Q9": {
+    "question": "My tracking status shows Delivered but I never received my package. What should I do?",
+    "namespace": "Shipping & Delivery Information",
+    "correct_chunk_id": "chunk-15"
+  },
+  "Q10": {
+    "question": "Can I change the delivery address on my order after it has been placed?",
+    "namespace": "Shipping & Delivery Information",
+    "correct_chunk_id": "chunk-18"
+  },
+  "Q11": {
+    "question": "How do I escalate my complaint to a senior agent or manager?",
+    "namespace": "Customer Escalation & Complaint Resolution",
+    "correct_chunk_id": "chunk-8"
+  },
+  "Q12": {
+    "question": "What are my options if the company's internal resolution does not satisfy my complaint?",
+    "namespace": "Customer Escalation & Complaint Resolution",
+    "correct_chunk_id": "chunk-33"
+  }
+}

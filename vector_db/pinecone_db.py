@@ -130,6 +130,21 @@ class PineconeDB:
         logger.info(f"Total vectors upserted: {total_upserted}")
         return total_upserted
 
+    def list_namespaces(self) -> List[str]:
+        """
+        Retrieve all active namespace names currently stored in the Pinecone index.
+
+        Returns:
+            List[str]: List of namespace names (e.g. ['default', 'finance']).
+        """
+        try:
+            stats = self.index.describe_index_stats()
+            namespaces = list(stats.get("namespaces", {}).keys())
+            return namespaces if namespaces else ["default"]
+        except Exception as e:
+            logger.warning(f"Could not retrieve namespaces from Pinecone: {e}")
+            return ["default"]
+
     def query(
         self,
         query_vector: List[float],
@@ -143,12 +158,45 @@ class PineconeDB:
         Args:
             query_vector (List[float]): Query embedding vector.
             top_k (int): Number of top results to return.
-            namespace (str): Pinecone namespace to search in.
+            namespace (str): Pinecone namespace to search in ('all' or 'auto' searches all namespaces).
             filter (Dict, optional): Metadata filter for the query.
 
         Returns:
             List[Dict]: List of matches, each with 'id', 'score', and 'metadata'.
         """
+        target_ns = (namespace or "").lower().strip()
+
+        # Cross-namespace search across all active namespaces
+        if target_ns in ("all", "auto", ""):
+            active_namespaces = self.list_namespaces()
+            all_matches = []
+            for ns in active_namespaces:
+                query_params = {
+                    "vector": query_vector,
+                    "top_k": top_k,
+                    "include_metadata": True,
+                    "namespace": ns,
+                }
+                if filter:
+                    query_params["filter"] = filter
+                try:
+                    res = self.index.query(**query_params)
+                    matches = res.get("matches", [])
+                    for m in matches:
+                        # Ensure metadata contains namespace for reference
+                        if "metadata" in m and isinstance(m["metadata"], dict):
+                            m["metadata"].setdefault("namespace", ns)
+                    all_matches.extend(matches)
+                except Exception as exc:
+                    logger.warning(f"Error querying namespace '{ns}': {exc}")
+
+            # Sort matches by vector similarity score descending
+            all_matches.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+            top_matches = all_matches[:top_k]
+            logger.info(f"Cross-namespace query returned {len(top_matches)} matches across {len(active_namespaces)} namespaces.")
+            return top_matches
+
+        # Single-namespace search
         query_params = {
             "vector": query_vector,
             "top_k": top_k,
@@ -160,10 +208,11 @@ class PineconeDB:
 
         response = self.index.query(**query_params)
         matches = response.get("matches", [])
-        logger.info(f"Query returned {len(matches)} results.")
+        logger.info(f"Query returned {len(matches)} results for namespace '{namespace}'.")
         return matches
 
     def delete_index(self):
         """Delete the current Pinecone index entirely."""
         self.pc.delete_index(self.index_name)
         logger.info(f"Index '{self.index_name}' deleted.")
+

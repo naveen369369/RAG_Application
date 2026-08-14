@@ -23,6 +23,7 @@ import csv
 import json
 import logging
 
+
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
@@ -30,6 +31,7 @@ from dotenv import load_dotenv
 from embeddings.embedding_model import EmbeddingModel
 from vector_db.pinecone_db import PineconeDB
 from llm.groq_model import GroqModel
+from rag.chunking import get_chunker
 
 load_dotenv()
 
@@ -94,6 +96,9 @@ class RAGPipeline:
 
         # Initialize Groq LLM
         self.llm = GroqModel()
+
+        # Cross-encoder loaded lazily on first rerank() call
+        self._cross_encoder = None
 
         logger.info(
             f"RAG Pipeline ready | chunk_size={self.chunk_size} | "
@@ -232,64 +237,88 @@ class RAGPipeline:
         logger.info(f"Loaded '{path.name}' ({ext}) — {len(content)} characters")
         return content
 
-    def chunk_text(self, text: str) -> List[str]:
+    def chunk_text(
+        self,
+        text: str,
+        strategy: str = "fixed_overlap",
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
+    ) -> List[str]:
         """
-        Split a long text into overlapping chunks for embedding.
-
-        Uses a character-based sliding window approach to ensure
-        that no context is lost at chunk boundaries.
+        Split text into chunks using the specified chunking strategy.
 
         Args:
-            text (str): The full document text to split.
+            text (str): Document text to split.
+            strategy (str): 'fixed_overlap' or 'hybrid'.
+            chunk_size (int, optional): Custom chunk size. Defaults to self.chunk_size.
+            chunk_overlap (int, optional): Custom overlap. Defaults to self.chunk_overlap.
 
         Returns:
             List[str]: List of text chunks.
         """
-        chunks = []
-        start = 0
+        size = chunk_size if chunk_size is not None else self.chunk_size
+        overlap = chunk_overlap if chunk_overlap is not None else self.chunk_overlap
 
-        while start < len(text):
-            end = start + self.chunk_size
-            chunk = text[start:end].strip()
+        chunker = get_chunker(strategy)
+        chunks = chunker.chunk_text(text, chunk_size=size, chunk_overlap=overlap)
 
-            if chunk:
-                chunks.append(chunk)
-
-            # Slide window forward, minus overlap
-            start += self.chunk_size - self.chunk_overlap
-
-        logger.info(f"Text split into {len(chunks)} chunks.")
+        logger.info(
+            f"Chunked text using strategy='{strategy}' | chunk_size={size} | "
+            f"chunk_overlap={overlap} -> {len(chunks)} chunks created."
+        )
         return chunks
 
     def load_and_chunk_documents(
-        self, file_paths: List[str]
+        self,
+        file_paths: List[str],
+        strategy: str = "fixed_overlap",
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
     ) -> tuple[List[str], List[Dict[str, Any]]]:
         """
         Load multiple documents and return their chunks with source metadata.
 
         Args:
             file_paths (List[str]): List of document file paths.
+            strategy (str): Chunking strategy ('fixed_overlap' or 'hybrid').
+            chunk_size (int, optional): Chunk size.
+            chunk_overlap (int, optional): Chunk overlap.
 
         Returns:
             Tuple of:
                 - List[str]: All text chunks across all documents.
-                - List[Dict]: Corresponding metadata for each chunk
-                  (source filename, chunk index).
+                - List[Dict]: Corresponding metadata for each chunk.
         """
         all_chunks = []
         all_metadata = []
 
+        # Standardize strategy string for metadata tag
+        metadata_strategy_tag = (
+            "hybrid"
+            if (strategy or "").lower().strip() in ("hybrid", "section_recursive")
+            else "fixed_overlap"
+        )
+
         for file_path in file_paths:
             text = self.load_document(file_path)
-            chunks = self.chunk_text(text)
+            chunks = self.chunk_text(
+                text=text,
+                strategy=strategy,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
             source_name = Path(file_path).name
 
             for i, chunk in enumerate(chunks):
                 all_chunks.append(chunk)
-                all_metadata.append({"source": source_name, "chunk_index": i})
+                all_metadata.append({
+                    "source": source_name,
+                    "chunk_index": i,
+                    "chunking_strategy": metadata_strategy_tag,
+                })
 
         logger.info(
-            f"Total chunks from {len(file_paths)} document(s): {len(all_chunks)}"
+            f"Total chunks from {len(file_paths)} document(s) with strategy='{metadata_strategy_tag}': {len(all_chunks)}"
         )
         return all_chunks, all_metadata
 
@@ -301,6 +330,9 @@ class RAGPipeline:
         self,
         file_paths: List[str],
         namespace: str = "default",
+        strategy: str = "fixed_overlap",
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
     ) -> int:
         """
         Full ingestion pipeline: load → chunk → embed → upsert to Pinecone.
@@ -308,14 +340,28 @@ class RAGPipeline:
         Args:
             file_paths (List[str]): Paths to documents to index.
             namespace (str): Pinecone namespace to store vectors in.
+            strategy (str): Chunking strategy ('fixed_overlap' or 'hybrid').
+            chunk_size (int, optional): Custom chunk size.
+            chunk_overlap (int, optional): Custom chunk overlap.
 
         Returns:
             int: Number of vectors stored in Pinecone.
         """
-        logger.info(f"Starting document indexing for {len(file_paths)} file(s)...")
+        logger.info(
+            f"Starting document indexing for {len(file_paths)} file(s) [strategy={strategy}]..."
+        )
 
         # Step 1: Load and chunk
-        chunks, metadata = self.load_and_chunk_documents(file_paths)
+        chunks, metadata = self.load_and_chunk_documents(
+            file_paths=file_paths,
+            strategy=strategy,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+
+        if not chunks:
+            logger.warning("No chunks created from input documents.")
+            return 0
 
         # Step 2: Generate embeddings
         vectors = self.embedding_model.embed_texts(chunks)
@@ -335,11 +381,50 @@ class RAGPipeline:
     # Retrieval
     # -------------------------------------------------------------------------
 
+    # -------------------------------------------------------------------------
+    # Cross-Encoder Reranking
+    # -------------------------------------------------------------------------
+
+    def _get_cross_encoder(self):
+        """Lazy-load the cross-encoder model on first use."""
+        if self._cross_encoder is None:
+            from sentence_transformers import CrossEncoder
+            logger.info("Loading cross-encoder model (first use)…")
+            self._cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+            logger.info("Cross-encoder model ready.")
+        return self._cross_encoder
+
+    def rerank(
+        self,
+        query: str,
+        matches: List[Dict[str, Any]],
+        top_k: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Rerank retrieved chunks with a cross-encoder and return the top_k best.
+        The cross-encoder scores each (query, chunk_text) pair jointly, producing
+        more accurate relevance judgements than embedding cosine similarity alone.
+        """
+        if not matches:
+            return matches
+        texts = [m["metadata"].get("text", "") for m in matches]
+        pairs = [[query, t] for t in texts]
+        scores = self._get_cross_encoder().predict(pairs)
+        ranked = sorted(zip(scores, matches), key=lambda x: x[0], reverse=True)
+        reranked = [m for _, m in ranked[:top_k]]
+        logger.info(f"Reranked {len(matches)} candidates → top {len(reranked)} kept")
+        return reranked
+
+    # -------------------------------------------------------------------------
+    # Retrieval
+    # -------------------------------------------------------------------------
+
     def retrieve(
         self,
         query: str,
         namespace: str = "default",
         filter: Optional[Dict[str, Any]] = None,
+        top_k_override: int = None,
     ) -> List[Dict[str, Any]]:
         """
         Retrieve the most relevant document chunks for a given query.
@@ -348,19 +433,19 @@ class RAGPipeline:
             query (str): User's search query.
             namespace (str): Pinecone namespace to search.
             filter (Dict, optional): Metadata filter for retrieval.
+            top_k_override (int, optional): Fetch this many candidates instead
+                of self.top_k. Used to widen the candidate pool before reranking.
 
         Returns:
-            List[Dict]: Top-k matching document chunks with scores and metadata.
+            List[Dict]: Matching document chunks with scores and metadata.
         """
         logger.info(f"Retrieving context for query: '{query}'")
 
-        # Embed the query
         query_vector = self.embedding_model.embed_text(query)
 
-        # Search Pinecone
         matches = self.vector_db.query(
             query_vector=query_vector,
-            top_k=self.top_k,
+            top_k=top_k_override if top_k_override is not None else self.top_k,
             namespace=namespace,
             filter=filter,
         )
@@ -415,7 +500,12 @@ class RAGPipeline:
 
     # -------------------------------------------------------------------------
     # Main Query Interface
+    def get_namespaces(self) -> List[str]:
+        """Retrieve list of all active namespaces in Pinecone."""
+        return self.vector_db.list_namespaces()
+
     # -------------------------------------------------------------------------
+
 
     def query(
         self,
@@ -424,6 +514,7 @@ class RAGPipeline:
         temperature: float = 0.2,
         stream: bool = False,
         return_sources: bool = False,
+        use_reranker: bool = False,
     ) -> Dict[str, Any]:
         """
         Execute the full RAG pipeline for a given question.
@@ -431,7 +522,9 @@ class RAGPipeline:
         Steps:
             1. Embed the question
             2. Retrieve relevant chunks from Pinecone
-            3. Generate an answer with Groq LLM
+               (fetches 2× top_k candidates when use_reranker=True)
+            3. Optionally rerank with cross-encoder
+            4. Generate an answer with Groq LLM
 
         Args:
             question (str): The user's natural language question.
@@ -439,6 +532,8 @@ class RAGPipeline:
             temperature (float): LLM generation temperature.
             stream (bool): If True, streams the response.
             return_sources (bool): If True, include source metadata in output.
+            use_reranker (bool): If True, apply cross-encoder reranking before
+                passing chunks to the LLM.
 
         Returns:
             Dict with keys:
@@ -446,11 +541,13 @@ class RAGPipeline:
                 - 'answer': The LLM-generated answer (or generator if stream=True)
                 - 'sources': List of source metadata (if return_sources=True)
                 - 'scores': List of retrieval similarity scores
+                - 'reranked': Whether cross-encoder reranking was applied
         """
         logger.info(f"\n{'='*60}\nQuestion: {question}\n{'='*60}")
 
-        # Retrieve context
-        matches = self.retrieve(query=question, namespace=namespace)
+        # Widen candidate pool when reranking so the reranker has more to work with
+        candidate_top_k = self.top_k * 2 if use_reranker else None
+        matches = self.retrieve(query=question, namespace=namespace, top_k_override=candidate_top_k)
 
         if not matches:
             logger.warning("No relevant documents found.")
@@ -459,13 +556,13 @@ class RAGPipeline:
                 "answer": "I couldn't find relevant context to answer your question.",
                 "sources": [],
                 "scores": [],
-                "hit_rate": {
-                    "hits": 0,
-                    "total": 0,
-                    "threshold": self.hit_threshold,
-                    "rate": 0.0,
-                },
+                "reranked": False,
             }
+
+        # Cross-encoder reranking: re-score all candidates jointly with the query,
+        # then trim back down to self.top_k for LLM context.
+        if use_reranker:
+            matches = self.rerank(query=question, matches=matches, top_k=self.top_k)
 
         # Generate answer
         answer = self.generate_answer(
@@ -475,22 +572,13 @@ class RAGPipeline:
             stream=stream,
         )
 
-        # Compute hit rate — a chunk is a "hit" if its score >= hit_threshold
         scores = [round(m.get("score", 0), 4) for m in matches]
-        hits = sum(1 for s in scores if s >= self.hit_threshold)
-        hit_rate_info = {
-            "hits": hits,
-            "total": len(scores),
-            "threshold": self.hit_threshold,
-            "rate": round(hits / len(scores), 4) if scores else 0.0,
-        }
 
-        # Build result
         result = {
             "question": question,
             "answer": answer,
             "scores": scores,
-            "hit_rate": hit_rate_info,
+            "reranked": use_reranker,
         }
 
         if return_sources:

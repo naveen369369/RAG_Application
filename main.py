@@ -10,9 +10,12 @@ Endpoints:
 """
 
 import os
+import re
+import time
 import shutil
 import tempfile
 import logging
+from collections import deque
 
 from contextlib import asynccontextmanager
 from typing import List, Optional
@@ -22,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from rag.rag_pipeline import RAGPipeline
+from eval.golden_eval import discover_chunk_ids, evaluate_hit_rate
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -31,6 +35,13 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Latency store — keeps the last 1000 query latencies (milliseconds)
+# ---------------------------------------------------------------------------
+
+_latency_store: deque = deque(maxlen=1000)
+
 
 # ---------------------------------------------------------------------------
 # Application state — shared RAGPipeline instance
@@ -87,6 +98,7 @@ class ChatRequest(BaseModel):
     return_sources: bool = False
     namespace: str = "default"
     temperature: float = 0.2
+    use_reranker: bool = False
 
 
 class SourceItem(BaseModel):
@@ -96,18 +108,12 @@ class SourceItem(BaseModel):
     score: float
 
 
-class HitRate(BaseModel):
-    hits: int
-    total: int
-    threshold: float
-    rate: float
-
-
 class ChatResponse(BaseModel):
     question: str
     answer: str
     scores: List[float]
-    hit_rate: HitRate
+    reranked: bool = False
+    latency_ms: float = 0.0
     sources: Optional[List[SourceItem]] = None
 
 
@@ -138,10 +144,42 @@ SUPPORTED_EXTENSIONS = {
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@app.get("/namespaces", tags=["System"])
+def get_namespaces():
+    """Retrieve list of active Pinecone namespaces."""
+    pipeline = get_pipeline()
+    try:
+        namespaces = pipeline.get_namespaces()
+        return {"namespaces": namespaces}
+    except Exception as exc:
+        logger.error(f"/namespaces error: {exc}")
+        return {"namespaces": ["default"]}
+
+
 @app.get("/health", tags=["System"])
 def health_check():
     """Simple health check endpoint."""
     return {"status": "ok", "pipeline_ready": app_state.pipeline is not None}
+
+
+@app.get("/metrics", tags=["System"])
+def get_latency_metrics():
+    """Return P50, P95, P99 latency percentiles calculated from stored query samples."""
+    samples = list(_latency_store)
+    count = len(samples)
+    if count == 0:
+        return {"sample_count": 0, "p50_ms": None, "p95_ms": None, "p99_ms": None,
+                "avg_ms": None, "min_ms": None, "max_ms": None}
+    arr = np.array(samples)
+    return {
+        "sample_count": count,
+        "p50_ms": round(float(np.percentile(arr, 50)), 1),
+        "p95_ms": round(float(np.percentile(arr, 95)), 1),
+        "p99_ms": round(float(np.percentile(arr, 99)), 1),
+        "avg_ms": round(float(arr.mean()), 1),
+        "min_ms": round(float(arr.min()), 1),
+        "max_ms": round(float(arr.max()), 1),
+    }
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
@@ -157,18 +195,21 @@ def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Question must not be empty.")
 
     try:
+        _t0 = time.perf_counter()
         result = pipeline.query(
             question=request.question,
             namespace=request.namespace,
             temperature=request.temperature,
             stream=False,           # REST doesn't support generator streaming
             return_sources=request.return_sources,
+            use_reranker=request.use_reranker,
         )
+        latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
+        _latency_store.append(latency_ms)
     except Exception as exc:
         logger.error(f"/chat error: {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    hit_rate_raw = result.get("hit_rate", {})
     sources = None
     if request.return_sources and result.get("sources"):
         sources = [
@@ -185,12 +226,8 @@ def chat(request: ChatRequest):
         question=result["question"],
         answer=result["answer"],
         scores=result.get("scores", []),
-        hit_rate=HitRate(
-            hits=hit_rate_raw.get("hits", 0),
-            total=hit_rate_raw.get("total", 0),
-            threshold=hit_rate_raw.get("threshold", 0.5),
-            rate=hit_rate_raw.get("rate", 0.0),
-        ),
+        reranked=result.get("reranked", False),
+        latency_ms=latency_ms,
         sources=sources,
     )
 
@@ -199,6 +236,9 @@ def chat(request: ChatRequest):
 async def index_documents(
     files: List[UploadFile] = File(...),
     namespace: str = "default",
+    chunking_strategy: str = "fixed_overlap",
+    chunk_size: Optional[int] = None,
+    chunk_overlap: Optional[int] = None,
 ):
     """
     Upload one or more documents and index them into Pinecone.
@@ -209,6 +249,14 @@ async def index_documents(
     then cleaned up automatically.
     """
     pipeline = get_pipeline()
+
+    # Auto-generate namespace from filename if namespace is 'auto' or empty
+    if not namespace or namespace.strip().lower() == "auto":
+        first_fn = files[0].filename if files else "doc"
+        clean_name = os.path.splitext(first_fn)[0]
+        namespace = re.sub(r"[^a-zA-Z0-9_-]", "_", clean_name).lower().strip("_") or "default"
+        logger.info(f"Auto-generated namespace from filename: '{namespace}'")
+
 
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
@@ -239,10 +287,13 @@ async def index_documents(
             indexed_names.append(upload.filename)
             logger.warning(f"Saved upload: {dest}")
 
-        # Run the existing indexing logic — completely unchanged
+        # Run indexing logic with selected chunking strategy
         count = pipeline.index_documents(
             file_paths=saved_paths,
             namespace=namespace,
+            strategy=chunking_strategy,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
 
     except HTTPException:
@@ -259,3 +310,41 @@ async def index_documents(
         files_indexed=indexed_names,
         vectors_stored=count,
     )
+
+
+# ---------------------------------------------------------------------------
+# Golden Evaluation Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/golden/discover", tags=["Evaluation"])
+def golden_discover():
+    """
+    Discover correct chunk IDs for all 12 golden questions.
+    Embeds each golden answer and finds the best-matching chunk in Pinecone.
+    Saves the mapping to eval/golden_chunk_map.json for use by /golden/evaluate.
+    """
+    pipeline = get_pipeline()
+    try:
+        result = discover_chunk_ids(pipeline)
+        return result
+    except Exception as exc:
+        logger.error(f"/golden/discover error: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/golden/evaluate", tags=["Evaluation"])
+def golden_evaluate(top_k: int = 3, use_reranker: bool = False):
+    """
+    Run Hit Rate @ {top_k} evaluation over all 12 golden questions.
+    For each question, embeds the question and checks whether the correct
+    chunk_id (discovered via /golden/discover) appears in the top-{top_k} results.
+    When use_reranker=True, fetches 2×top_k candidates then reranks before checking.
+    Returns overall hit rate and per-question breakdown.
+    """
+    pipeline = get_pipeline()
+    try:
+        result = evaluate_hit_rate(pipeline, top_k=top_k, use_reranker=use_reranker)
+        return result
+    except Exception as exc:
+        logger.error(f"/golden/evaluate error: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
