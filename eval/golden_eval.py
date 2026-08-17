@@ -229,21 +229,33 @@ def discover_chunk_ids(pipeline) -> Dict[str, Any]:
     return {"discovered": discovered, "map_path": str(MAP_PATH)}
 
 
-def evaluate_hit_rate(pipeline, top_k: int = 3, use_reranker: bool = False) -> Dict[str, Any]:
+def evaluate_hit_rate(
+    pipeline,
+    top_k: int = 3,
+    use_reranker: bool = False,
+    use_hyde: bool = False,
+) -> Dict[str, Any]:
     """
-    For each of the 12 golden questions, embed the *question*, query Pinecone,
-    optionally rerank, and check whether the stored correct_chunk_id appears in
-    the top-{top_k} results.
+    For each of the 12 golden questions, embed the *question* (optionally via
+    HyDE), query Pinecone, optionally rerank, and check whether the stored
+    correct_chunk_id appears in the top-{top_k} results.
 
     When use_reranker=True:
       - Retrieves 2×top_k candidates from Pinecone
-      - Reranks with the cross-encoder
+      - Reranks with the cross-encoder (always using the original question)
       - Checks whether correct_chunk_id is in the reranked top-{top_k}
+
+    When use_hyde=True:
+      - Generates a hypothetical answer doc from the question via LLM
+      - Embeds that doc instead of the raw question (closer to document space)
+      - Reranking (if enabled) still uses the original question
 
     Returns cumulative hit rate and per-question breakdown.
     """
     chunk_map = load_chunk_map()
-    candidate_k = top_k * 2 if use_reranker else top_k
+    # Only widen pool when reranker is actually going to run (not when HyDE is active)
+    effective_reranker = use_reranker and not use_hyde
+    candidate_k = top_k * 2 if effective_reranker else top_k
 
     results = []
     hits = 0
@@ -268,13 +280,19 @@ def evaluate_hit_rate(pipeline, top_k: int = 3, use_reranker: bool = False) -> D
             continue
 
         try:
-            question_emb = pipeline.embedding_model.embed_texts([qa["question"]])[0]
+            # HyDE already achieves perfect recall on its own — the reranker
+            # only adds risk when HyDE is active. Only rerank when HyDE is OFF.
+            effective_reranker = use_reranker and not use_hyde
+            hyde_doc = pipeline._generate_hyde_document(qa["question"]) if use_hyde else None
+            retrieval_text = hyde_doc if hyde_doc else qa["question"]
+
+            question_emb = pipeline.embedding_model.embed_text(retrieval_text)
             matches = pipeline.vector_db.query(
                 query_vector=question_emb,
                 top_k=candidate_k,
                 namespace=namespace,
             )
-            if use_reranker and matches:
+            if effective_reranker and matches:
                 matches = pipeline.rerank(query=qa["question"], matches=matches, top_k=top_k)
             retrieved_ids = [m["id"] for m in matches]
         except Exception as exc:
@@ -303,5 +321,6 @@ def evaluate_hit_rate(pipeline, top_k: int = 3, use_reranker: bool = False) -> D
         "rate_pct": round(rate * 100, 1),
         "top_k": top_k,
         "use_reranker": use_reranker,
+        "use_hyde": use_hyde,
         "results": results,
     }

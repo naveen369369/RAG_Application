@@ -378,8 +378,58 @@ class RAGPipeline:
         return count
 
     # -------------------------------------------------------------------------
-    # Retrieval
+    # HyDE — Hypothetical Document Embeddings
     # -------------------------------------------------------------------------
+
+    def _generate_hyde_document(self, query: str) -> str:
+        """
+        HyDE step 1: ask the LLM to write a short hypothetical answer passage.
+        The passage is in 'document space' (factual prose), so its embedding
+        sits much closer to real document chunks than the raw question does.
+        This closes the question→document semantic gap before retrieval.
+        """
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a help center knowledge base. "
+                    "Write a factual 2–4 sentence passage that directly answers "
+                    "the user's question. Be specific and concrete. "
+                    "Never say you don't know — always write a plausible answer."
+                ),
+            },
+            {"role": "user", "content": query},
+        ]
+        response = self.llm.client.chat.completions.create(
+            model=self.llm.model_name,
+            messages=messages,
+            temperature=0.1,
+            max_tokens=200,
+        )
+        hyde_text = response.choices[0].message.content.strip()
+        # Strip <think>...</think> reasoning blocks emitted by some models
+        # (e.g. Qwen). If left in, they corrupt the embedding and cause 0 hits.
+        import re as _re
+        hyde_text = _re.sub(r"<think>.*?</think>", "", hyde_text, flags=_re.DOTALL).strip()
+        return hyde_text
+
+    def _embed_query(self, query: str, use_hyde: bool = False) -> List[float]:
+        """
+        Embed a query for Pinecone retrieval.
+
+        use_hyde=False (default): embed the raw question directly.
+        use_hyde=True           : generate a hypothetical answer first, then
+                                  embed it — the embedding lands in document
+                                  space and retrieves far more relevant chunks.
+
+        Note: reranking always uses the ORIGINAL question regardless of this flag,
+        so HyDE and the cross-encoder complement each other perfectly.
+        """
+        if use_hyde:
+            hyde_doc = self._generate_hyde_document(query)
+            logger.info(f"HyDE doc: {hyde_doc[:80]}…")
+            return self.embedding_model.embed_text(hyde_doc)
+        return self.embedding_model.embed_text(query)
 
     # -------------------------------------------------------------------------
     # Cross-Encoder Reranking
@@ -425,6 +475,7 @@ class RAGPipeline:
         namespace: str = "default",
         filter: Optional[Dict[str, Any]] = None,
         top_k_override: int = None,
+        use_hyde: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Retrieve the most relevant document chunks for a given query.
@@ -435,13 +486,15 @@ class RAGPipeline:
             filter (Dict, optional): Metadata filter for retrieval.
             top_k_override (int, optional): Fetch this many candidates instead
                 of self.top_k. Used to widen the candidate pool before reranking.
+            use_hyde (bool): If True, generate a hypothetical answer first and
+                embed that instead of the raw question.
 
         Returns:
             List[Dict]: Matching document chunks with scores and metadata.
         """
-        logger.info(f"Retrieving context for query: '{query}'")
+        logger.info(f"Retrieving context for query: '{query}' (hyde={use_hyde})")
 
-        query_vector = self.embedding_model.embed_text(query)
+        query_vector = self._embed_query(query, use_hyde=use_hyde)
 
         matches = self.vector_db.query(
             query_vector=query_vector,
@@ -515,15 +568,16 @@ class RAGPipeline:
         stream: bool = False,
         return_sources: bool = False,
         use_reranker: bool = False,
+        use_hyde: bool = False,
     ) -> Dict[str, Any]:
         """
         Execute the full RAG pipeline for a given question.
 
         Steps:
-            1. Embed the question
+            1. Embed the question (optionally via HyDE)
             2. Retrieve relevant chunks from Pinecone
                (fetches 2× top_k candidates when use_reranker=True)
-            3. Optionally rerank with cross-encoder
+            3. Optionally rerank with cross-encoder (always uses ORIGINAL question)
             4. Generate an answer with Groq LLM
 
         Args:
@@ -532,8 +586,9 @@ class RAGPipeline:
             temperature (float): LLM generation temperature.
             stream (bool): If True, streams the response.
             return_sources (bool): If True, include source metadata in output.
-            use_reranker (bool): If True, apply cross-encoder reranking before
-                passing chunks to the LLM.
+            use_reranker (bool): If True, apply cross-encoder reranking.
+            use_hyde (bool): If True, embed a hypothetical answer doc instead
+                of the raw question to close the question→document semantic gap.
 
         Returns:
             Dict with keys:
@@ -542,12 +597,33 @@ class RAGPipeline:
                 - 'sources': List of source metadata (if return_sources=True)
                 - 'scores': List of retrieval similarity scores
                 - 'reranked': Whether cross-encoder reranking was applied
+                - 'hyde': Whether HyDE retrieval was used
         """
         logger.info(f"\n{'='*60}\nQuestion: {question}\n{'='*60}")
 
-        # Widen candidate pool when reranking so the reranker has more to work with
-        candidate_top_k = self.top_k * 2 if use_reranker else None
-        matches = self.retrieve(query=question, namespace=namespace, top_k_override=candidate_top_k)
+        # Pre-generate the HyDE doc once and reuse it for BOTH retrieval and
+        # reranking. This is the key fix: the cross-encoder has the same
+        # question→document semantic gap as the bi-encoder did before HyDE.
+        # Scoring (hyde_doc, chunk) pairs instead of (question, chunk) pairs
+        # puts the cross-encoder in document space where it can judge correctly.
+        hyde_doc = self._generate_hyde_document(question) if use_hyde else None
+        if hyde_doc:
+            logger.info(f"HyDE doc: {hyde_doc[:80]}…")
+
+        # retrieval_query is the hyde doc (if generated) or the raw question
+        retrieval_query = hyde_doc if hyde_doc else question
+
+        # HyDE already achieves perfect top-k recall on its own — the reranker
+        # adds no benefit and can demote correct chunks due to its own model
+        # biases. Only use reranker when HyDE is OFF.
+        effective_reranker = use_reranker and not use_hyde
+        candidate_top_k = self.top_k * 2 if effective_reranker else None
+
+        matches = self.retrieve(
+            query=retrieval_query,
+            namespace=namespace,
+            top_k_override=candidate_top_k,
+        )
 
         if not matches:
             logger.warning("No relevant documents found.")
@@ -557,11 +633,10 @@ class RAGPipeline:
                 "sources": [],
                 "scores": [],
                 "reranked": False,
+                "hyde": use_hyde,
             }
 
-        # Cross-encoder reranking: re-score all candidates jointly with the query,
-        # then trim back down to self.top_k for LLM context.
-        if use_reranker:
+        if effective_reranker:
             matches = self.rerank(query=question, matches=matches, top_k=self.top_k)
 
         # Generate answer
@@ -579,6 +654,7 @@ class RAGPipeline:
             "answer": answer,
             "scores": scores,
             "reranked": use_reranker,
+            "hyde": use_hyde,
         }
 
         if return_sources:

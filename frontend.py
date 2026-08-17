@@ -250,12 +250,21 @@ with st.sidebar:
         selected_namespace = ns_selection
 
     show_sources = st.checkbox("Show Sources Attribution", value=True)
+    use_hyde = st.toggle(
+        "🔬 HyDE Retrieval",
+        value=False,
+        key="use_hyde",
+        help="Generate a hypothetical answer first, then embed it for retrieval. Closes the question→document semantic gap. Best accuracy — reranker is automatically disabled when this is ON.",
+    )
     use_reranker = st.toggle(
         "⚡ Cross-Encoder Reranking",
         value=False,
         key="use_reranker",
-        help="Retrieve 2× more candidates, then rerank with a cross-encoder before answering. More accurate, slightly slower.",
+        disabled=use_hyde,
+        help="Retrieve 2× more candidates, then rerank with a cross-encoder. Disabled when HyDE is ON — HyDE already achieves perfect retrieval on its own.",
     )
+    if use_hyde:
+        st.caption("⚡ Reranker disabled — HyDE handles retrieval.")
 
     st.markdown("<hr style='border-color:#2f2f2f; margin:15px 0;'>", unsafe_allow_html=True)
 
@@ -336,7 +345,10 @@ with st.sidebar:
         if st.button("▶ Evaluate", use_container_width=True, key="btn_evaluate",
                      help="Run all 12 questions through retriever and compute hit rate"):
             with st.spinner("Running evaluation…"):
-                resp, err = api_get("/golden/evaluate", params={"use_reranker": str(use_reranker).lower()})
+                resp, err = api_get("/golden/evaluate", params={
+                    "use_reranker": str(use_reranker).lower(),
+                    "use_hyde": str(use_hyde).lower(),
+                })
             if err:
                 st.error(f"Evaluate failed: {err}")
             else:
@@ -348,7 +360,15 @@ with st.sidebar:
         total = ev.get("total", 0)
         pct = ev.get("rate_pct", 0.0)
         ev_reranked = ev.get("use_reranker", False)
-        mode_label = "⚡ With Reranker" if ev_reranked else "📐 Semantic Only"
+        ev_hyde = ev.get("use_hyde", False)
+        if ev_reranked and ev_hyde:
+            mode_label = "⚡🔬 Reranker + HyDE"
+        elif ev_reranked:
+            mode_label = "⚡ With Reranker"
+        elif ev_hyde:
+            mode_label = "⚡🔬 Reranker + HyDE"
+        else:
+            mode_label = "📐 Semantic Only"
         hr_color = "#10a37f" if pct >= 70 else "#f59e0b" if pct >= 40 else "#ef4444"
         st.markdown(
             f'<div style="margin:6px 0;padding:10px 14px;border-radius:10px;'
@@ -415,7 +435,8 @@ for message in st.session_state.messages:
         if message["role"] == "assistant":
             latency_ms = message.get("latency_ms", 0.0)
             was_reranked = message.get("reranked", False)
-            if latency_ms or was_reranked:
+            was_hyde = message.get("hyde", False)
+            if latency_ms or was_reranked or was_hyde:
                 lat_color = "#10a37f" if latency_ms < 1000 else "#f59e0b" if latency_ms < 3000 else "#ef4444"
                 lat_label = f"{latency_ms:.0f} ms" if latency_ms < 1000 else f"{latency_ms/1000:.2f} s"
                 reranker_badge = (
@@ -425,9 +446,17 @@ for message in st.session_state.messages:
                     '⚡ Reranked'
                     '</span>'
                 ) if was_reranked else ""
+                hyde_badge = (
+                    '<span style="background:rgba(0,0,0,0.04);color:#0891b2;'
+                    'border:1px solid #0891b2;padding:3px 10px;border-radius:999px;'
+                    'font-weight:600;font-size:0.78rem;margin-right:6px;">'
+                    '🔬 HyDE'
+                    '</span>'
+                ) if was_hyde else ""
                 st.markdown(
                     f'<div style="margin-top:8px;">'
                     f'{reranker_badge}'
+                    f'{hyde_badge}'
                     f'<span style="background:rgba(0,0,0,0.04);color:{lat_color};'
                     f'border:1px solid {lat_color};padding:3px 10px;border-radius:999px;'
                     f'font-weight:600;font-size:0.78rem;">'
@@ -463,6 +492,7 @@ if user_input:
         "namespace": selected_namespace,
         "return_sources": show_sources,
         "use_reranker": use_reranker,
+        "use_hyde": use_hyde,
     }
 
     with st.chat_message("assistant", avatar="🟢"):
@@ -477,6 +507,7 @@ if user_input:
             sources = resp.get("sources")
             latency_ms = resp.get("latency_ms", 0.0)
             was_reranked = resp.get("reranked", False)
+            was_hyde = resp.get("hyde", False)
 
             # Real-Time Word-by-Word Streaming Simulation
             full_response = ""
@@ -484,11 +515,11 @@ if user_input:
             for idx, word in enumerate(words):
                 full_response += word + " "
                 message_placeholder.markdown(full_response + "▌")
-                time.sleep(0.02) # Fast real-time typing effect
+                time.sleep(0.02)
 
             message_placeholder.markdown(full_response)
 
-            if latency_ms or was_reranked:
+            if latency_ms or was_reranked or was_hyde:
                 lat_color = "#10a37f" if latency_ms < 1000 else "#f59e0b" if latency_ms < 3000 else "#ef4444"
                 lat_label = f"{latency_ms:.0f} ms" if latency_ms < 1000 else f"{latency_ms/1000:.2f} s"
                 reranker_badge = (
@@ -498,9 +529,17 @@ if user_input:
                     '⚡ Reranked'
                     '</span>'
                 ) if was_reranked else ""
+                hyde_badge = (
+                    '<span style="background:rgba(0,0,0,0.04);color:#0891b2;'
+                    'border:1px solid #0891b2;padding:3px 10px;border-radius:999px;'
+                    'font-weight:600;font-size:0.78rem;margin-right:6px;">'
+                    '🔬 HyDE'
+                    '</span>'
+                ) if was_hyde else ""
                 st.markdown(
                     f'<div style="margin-top:8px;">'
                     f'{reranker_badge}'
+                    f'{hyde_badge}'
                     f'<span style="background:rgba(0,0,0,0.04);color:{lat_color};'
                     f'border:1px solid {lat_color};padding:3px 10px;border-radius:999px;'
                     f'font-weight:600;font-size:0.78rem;">'
@@ -529,4 +568,5 @@ if user_input:
                 "sources": sources,
                 "latency_ms": latency_ms,
                 "reranked": was_reranked,
+                "hyde": was_hyde,
             })

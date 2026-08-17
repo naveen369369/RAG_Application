@@ -6,22 +6,26 @@ Exposes the existing RAG pipeline as REST endpoints.
 Endpoints:
     GET  /health          — Health check
     POST /chat            — Ask a question (non-streaming)
+    POST /chat/stream     — Ask a question with real token streaming (NDJSON)
     POST /index           — Upload & index one or more documents
+    POST /golden/discover — Map golden answer chunks in Pinecone
+    GET  /golden/evaluate — Run Hit Rate @ K evaluation
 """
 
 import os
 import re
 import time
+import json
 import shutil
 import tempfile
 import logging
 from collections import deque
-
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import Generator, List, Optional
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from rag.rag_pipeline import RAGPipeline
@@ -64,7 +68,6 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to initialize RAG Pipeline: {exc}")
         raise
     yield
-    # Cleanup (nothing needed for this pipeline)
     logger.warning("Shutting down RAG Pipeline.")
 
 
@@ -79,7 +82,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow Streamlit frontend (localhost:8501) to call this API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -99,6 +101,7 @@ class ChatRequest(BaseModel):
     namespace: str = "default"
     temperature: float = 0.2
     use_reranker: bool = False
+    use_hyde: bool = False
 
 
 class SourceItem(BaseModel):
@@ -113,6 +116,7 @@ class ChatResponse(BaseModel):
     answer: str
     scores: List[float]
     reranked: bool = False
+    hyde: bool = False
     latency_ms: float = 0.0
     sources: Optional[List[SourceItem]] = None
 
@@ -128,16 +132,22 @@ class IndexResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 def get_pipeline() -> RAGPipeline:
-    """Return the shared pipeline instance, raising 503 if not ready."""
     if app_state.pipeline is None:
         raise HTTPException(status_code=503, detail="RAG Pipeline is not initialized.")
     return app_state.pipeline
 
 
-# Supported file extensions (mirrors rag_pipeline.SUPPORTED_FORMATS)
 SUPPORTED_EXTENSIONS = {
     ".txt", ".md", ".pdf", ".docx", ".csv", ".json", ".html", ".htm"
 }
+
+
+def _percentile(sorted_data: list, p: float) -> float:
+    """Linear-interpolation percentile over a pre-sorted list."""
+    idx = (len(sorted_data) - 1) * p / 100
+    lo = int(idx)
+    hi = min(lo + 1, len(sorted_data) - 1)
+    return sorted_data[lo] + (sorted_data[hi] - sorted_data[lo]) * (idx - lo)
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +156,6 @@ SUPPORTED_EXTENSIONS = {
 
 @app.get("/namespaces", tags=["System"])
 def get_namespaces():
-    """Retrieve list of active Pinecone namespaces."""
     pipeline = get_pipeline()
     try:
         namespaces = pipeline.get_namespaces()
@@ -158,38 +167,32 @@ def get_namespaces():
 
 @app.get("/health", tags=["System"])
 def health_check():
-    """Simple health check endpoint."""
     return {"status": "ok", "pipeline_ready": app_state.pipeline is not None}
 
 
 @app.get("/metrics", tags=["System"])
 def get_latency_metrics():
-    """Return P50, P95, P99 latency percentiles calculated from stored query samples."""
+    """Return P50, P95, P99 latency percentiles from stored query samples."""
     samples = list(_latency_store)
     count = len(samples)
     if count == 0:
         return {"sample_count": 0, "p50_ms": None, "p95_ms": None, "p99_ms": None,
                 "avg_ms": None, "min_ms": None, "max_ms": None}
-    arr = np.array(samples)
+    s = sorted(samples)
     return {
         "sample_count": count,
-        "p50_ms": round(float(np.percentile(arr, 50)), 1),
-        "p95_ms": round(float(np.percentile(arr, 95)), 1),
-        "p99_ms": round(float(np.percentile(arr, 99)), 1),
-        "avg_ms": round(float(arr.mean()), 1),
-        "min_ms": round(float(arr.min()), 1),
-        "max_ms": round(float(arr.max()), 1),
+        "p50_ms": round(_percentile(s, 50), 1),
+        "p95_ms": round(_percentile(s, 95), 1),
+        "p99_ms": round(_percentile(s, 99), 1),
+        "avg_ms": round(sum(samples) / count, 1),
+        "min_ms": round(min(samples), 1),
+        "max_ms": round(max(samples), 1),
     }
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
 def chat(request: ChatRequest):
-    """
-    Ask a question using the RAG pipeline.
-
-    The pipeline embeds the question, retrieves relevant chunks from Pinecone,
-    and generates an answer using the Groq LLM.
-    """
+    """Ask a question using the RAG pipeline (non-streaming)."""
     pipeline = get_pipeline()
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question must not be empty.")
@@ -200,9 +203,10 @@ def chat(request: ChatRequest):
             question=request.question,
             namespace=request.namespace,
             temperature=request.temperature,
-            stream=False,           # REST doesn't support generator streaming
+            stream=False,
             return_sources=request.return_sources,
             use_reranker=request.use_reranker,
+            use_hyde=request.use_hyde,
         )
         latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
         _latency_store.append(latency_ms)
@@ -227,9 +231,84 @@ def chat(request: ChatRequest):
         answer=result["answer"],
         scores=result.get("scores", []),
         reranked=result.get("reranked", False),
+        hyde=result.get("hyde", False),
         latency_ms=latency_ms,
         sources=sources,
     )
+
+
+@app.post("/chat/stream", tags=["Chat"])
+def chat_stream(request: ChatRequest):
+    """
+    Ask a question and receive the answer as a real token stream (NDJSON).
+
+    Each line is a JSON object:
+      {"t": "<token>"}          — one LLM token as it arrives
+      {"done": true, "latency_ms": ..., "reranked": ..., "hyde": ..., "sources": [...]}
+                                — final metadata line after streaming completes
+    """
+    pipeline = get_pipeline()
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question must not be empty.")
+
+    def _generate() -> Generator[str, None, None]:
+        _t0 = time.perf_counter()
+
+        # HyDE already achieves perfect recall — reranker only adds risk when
+        # HyDE is active, so skip it. Only rerank when HyDE is OFF.
+        effective_reranker = request.use_reranker and not request.use_hyde
+        hyde_doc = pipeline._generate_hyde_document(request.question) if request.use_hyde else None
+        retrieval_query = hyde_doc if hyde_doc else request.question
+
+        candidate_top_k = pipeline.top_k * 2 if effective_reranker else None
+        matches = pipeline.retrieve(
+            query=retrieval_query,
+            namespace=request.namespace,
+            top_k_override=candidate_top_k,
+        )
+
+        if not matches:
+            yield json.dumps({"t": "I couldn't find relevant context to answer your question."}) + "\n"
+            yield json.dumps({"done": True, "latency_ms": 0.0, "reranked": False, "hyde": request.use_hyde, "sources": []}) + "\n"
+            return
+
+        if effective_reranker:
+            matches = pipeline.rerank(query=request.question, matches=matches, top_k=pipeline.top_k)
+
+        # Stream LLM tokens
+        token_stream = pipeline.generate_answer(
+            query=request.question,
+            context_matches=matches,
+            temperature=request.temperature,
+            stream=True,
+        )
+        for token in token_stream:
+            yield json.dumps({"t": token}) + "\n"
+
+        latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
+        _latency_store.append(latency_ms)
+
+        sources = []
+        if request.return_sources:
+            sources = [
+                {
+                    "text": m["metadata"].get("text", "")[:200] + "...",
+                    "source": m["metadata"].get("source", "unknown"),
+                    "chunk_index": m["metadata"].get("chunk_index", -1),
+                    "score": round(m.get("score", 0), 4),
+                }
+                for m in matches
+            ]
+
+        yield json.dumps({
+            "done": True,
+            "latency_ms": latency_ms,
+            "reranked": request.use_reranker,
+            "hyde": request.use_hyde,
+            "sources": sources,
+        }) + "\n"
+
+    return StreamingResponse(_generate(), media_type="application/x-ndjson")
 
 
 @app.post("/index", response_model=IndexResponse, tags=["Index"])
@@ -240,28 +319,18 @@ async def index_documents(
     chunk_size: Optional[int] = None,
     chunk_overlap: Optional[int] = None,
 ):
-    """
-    Upload one or more documents and index them into Pinecone.
-
-    Supported formats: .txt, .md, .pdf, .docx, .csv, .json, .html, .htm
-
-    Files are temporarily saved on the server, processed by the RAG pipeline,
-    then cleaned up automatically.
-    """
+    """Upload one or more documents and index them into Pinecone."""
     pipeline = get_pipeline()
 
-    # Auto-generate namespace from filename if namespace is 'auto' or empty
     if not namespace or namespace.strip().lower() == "auto":
         first_fn = files[0].filename if files else "doc"
         clean_name = os.path.splitext(first_fn)[0]
         namespace = re.sub(r"[^a-zA-Z0-9_-]", "_", clean_name).lower().strip("_") or "default"
         logger.info(f"Auto-generated namespace from filename: '{namespace}'")
 
-
     if not files:
         raise HTTPException(status_code=400, detail="No files provided.")
 
-    # Validate extensions before doing any disk I/O
     for f in files:
         ext = os.path.splitext(f.filename or "")[1].lower()
         if ext not in SUPPORTED_EXTENSIONS:
@@ -273,7 +342,6 @@ async def index_documents(
                 ),
             )
 
-    # Save uploaded files to a temporary directory
     tmp_dir = tempfile.mkdtemp(prefix="rag_upload_")
     saved_paths: List[str] = []
     indexed_names: List[str] = []
@@ -285,9 +353,7 @@ async def index_documents(
                 shutil.copyfileobj(upload.file, out)
             saved_paths.append(dest)
             indexed_names.append(upload.filename)
-            logger.warning(f"Saved upload: {dest}")
 
-        # Run indexing logic with selected chunking strategy
         count = pipeline.index_documents(
             file_paths=saved_paths,
             namespace=namespace,
@@ -302,7 +368,6 @@ async def index_documents(
         logger.error(f"/index error: {exc}")
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
-        # Always clean up temp files
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     return IndexResponse(
@@ -321,7 +386,6 @@ def golden_discover():
     """
     Discover correct chunk IDs for all 12 golden questions.
     Embeds each golden answer and finds the best-matching chunk in Pinecone.
-    Saves the mapping to eval/golden_chunk_map.json for use by /golden/evaluate.
     """
     pipeline = get_pipeline()
     try:
@@ -333,17 +397,17 @@ def golden_discover():
 
 
 @app.get("/golden/evaluate", tags=["Evaluation"])
-def golden_evaluate(top_k: int = 3, use_reranker: bool = False):
+def golden_evaluate(top_k: int = 3, use_reranker: bool = False, use_hyde: bool = False):
     """
     Run Hit Rate @ {top_k} evaluation over all 12 golden questions.
-    For each question, embeds the question and checks whether the correct
-    chunk_id (discovered via /golden/discover) appears in the top-{top_k} results.
-    When use_reranker=True, fetches 2×top_k candidates then reranks before checking.
-    Returns overall hit rate and per-question breakdown.
+
+    use_reranker=true: fetches 2×top_k candidates, reranks, then checks hit.
+    use_hyde=true    : embeds a hypothetical answer doc instead of raw question.
+    Both flags can be combined for the strongest retrieval configuration.
     """
     pipeline = get_pipeline()
     try:
-        result = evaluate_hit_rate(pipeline, top_k=top_k, use_reranker=use_reranker)
+        result = evaluate_hit_rate(pipeline, top_k=top_k, use_reranker=use_reranker, use_hyde=use_hyde)
         return result
     except Exception as exc:
         logger.error(f"/golden/evaluate error: {exc}")
