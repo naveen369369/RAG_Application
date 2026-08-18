@@ -35,13 +35,13 @@
 
 | Label | Meaning |
 |-------|---------|
-| **G** | Gap — correct chunk not retrieved at all (semantic gap between question and document vocabulary) |
-| **R** | Ranking — correct chunk retrieved but ranked outside top-3 |
+| **G** | Generation — correct chunk not retrieved at all (semantic gap between question and document vocabulary) |
+| **R** | Retrieval — correct chunk retrieved but ranked outside top-3 |
 | **NIC** | Not-In-Corpus — correct chunk ID does not exist in Pinecone |
 
 ### Q7 — `chunk-10` — Technical Troubleshooting Guide
 
-**Failure type: G (Semantic Gap)**
+**Failure type: G (Semantic Generation)**
 
 - Question language: *"What does error code ERR-1001 mean and how do I fix it?"*
 - Document language: *"ERR-1001 — Authentication token expired. Log out and log back in..."*
@@ -52,7 +52,7 @@
 
 ### Q8 — `chunk-14` — Technical Troubleshooting Guide
 
-**Failure type: R (Ranking)**
+**Failure type: R (Retrieval)**
 
 - Question language: *"My app keeps crashing on mobile. What steps should I follow to fix it?"*
 - Document language: Procedural troubleshooting steps (imperative, numbered list format).
@@ -64,8 +64,8 @@
 
 | ID | Failure Type | Fixed by Reranker | Fixed by HyDE |
 |----|:------------:|:-----------------:|:-------------:|
-| Q7 | G (Gap) | No | Yes |
-| Q8 | R (Ranking) | Yes | Yes |
+| Q7 | G (Generation) | No | Yes |
+| Q8 | R (Retrieval) | Yes | Yes |
 
 ---
 
@@ -103,7 +103,7 @@ LLM generates final answer from retrieved context
 
 ### Reranker behaviour with HyDE
 
-When HyDE is ON, the cross-encoder reranker is **disabled** — HyDE already achieves 12/12 hit rate, and the reranker was found to demote correct chunks because it still operates on the original question (which has the same semantic gap). Disabling the reranker when HyDE is active prevents this regression.
+When HyDE is ON, — HyDE achieves 12/12 hit rate, and the reranker was found to demote correct chunks because it still operates on the original question (which has the same semantic gap). Disabling the reranker when HyDE is active prevents this regression.
 
 ```python
 # rag_pipeline.py — the guard
@@ -128,7 +128,7 @@ effective_reranker = use_reranker and not use_hyde
 |---------------|:-----------:|------------|
 | Semantic only (baseline) | ~180 ms | — |
 | Reranker only | ~420 ms | +240 ms (cross-encoder inference) |
-| **HyDE only (shipped)** | **~550 ms** | **+370 ms (one extra Groq LLM call)** |
+| **HyDE + Reranker (shipped)** | **~550 ms** | **+370 ms (one extra Groq LLM call)** |
 
 > Latency measured end-to-end at the `/chat` endpoint (retrieval + generation).
 > HyDE adds one Groq API call (~300–400 ms) before Pinecone retrieval.
@@ -146,8 +146,8 @@ effective_reranker = use_reranker and not use_hyde
 | Q4 | ✅ | ✅ | ✅ | Stable |
 | Q5 | ✅ | ✅ | ✅ | Stable |
 | Q6 | ✅ | ✅ | ✅ | Stable |
-| Q7 | ❌ Gap | ❌ Gap | ✅ Fixed | Fixed by HyDE |
-| Q8 | ❌ Ranking | ✅ Fixed | ✅ Fixed | Fixed by Reranker / HyDE |
+| Q7 | ❌ Generation | ❌ Generation | ✅ Fixed | Fixed by HyDE |
+| Q8 | ❌ Retrievel | ✅ Fixed | ✅ Fixed | Fixed by Reranker / HyDE |
 | Q9 | ✅ | ✅ | ✅ | Stable |
 | Q10 | ✅ | ✅ | ✅ | Stable |
 | Q11 | ✅ | ✅ | ✅ | Stable |
