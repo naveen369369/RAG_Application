@@ -9,7 +9,7 @@ Orchestrates the full Retrieval-Augmented Generation (RAG) workflow:
 
 Supported document formats:
   .txt, .md  — Plain text and Markdown
-  .pdf       — PDF documents (via pypdf)
+  .pdf       — PDF documents (via pypdf for text-based; pytesseract + pdf2image for scanned/OCR PDFs)
   .docx      — Microsoft Word documents (via python-docx)
   .csv       — Comma-separated values
   .json      — JSON files
@@ -119,7 +119,22 @@ class RAGPipeline:
             return f.read()
 
     def _load_pdf(self, path: Path) -> str:
-        """Load PDF file using pypdf."""
+        """
+        Load PDF file with automatic OCR fallback.
+
+        Strategy:
+          1. Try pypdf first (fast, works on text-based PDFs).
+          2. If no text is extracted (scanned / image-only PDF), fall back to
+             OCR using pdf2image (converts pages → PIL images) + pytesseract
+             (Tesseract OCR engine).
+
+        Requirements for OCR fallback:
+          - pip install pdf2image pytesseract
+          - Tesseract-OCR binary must be installed on the system:
+            Windows : https://github.com/UB-Mannheim/tesseract/wiki
+            Linux   : sudo apt install tesseract-ocr
+            macOS   : brew install tesseract
+        """
         try:
             import pypdf
         except ImportError:
@@ -127,14 +142,60 @@ class RAGPipeline:
                 "pypdf is required to load PDF files. "
                 "Install it with: pip install pypdf"
             )
+
+        # ── Step 1: Try text-based extraction with pypdf ──────────────────────
         text_parts = []
         with open(path, "rb") as f:
             reader = pypdf.PdfReader(f)
             for page in reader.pages:
                 page_text = page.extract_text()
-                if page_text:
+                if page_text and page_text.strip():
                     text_parts.append(page_text)
-        return "\n".join(text_parts)
+
+        if text_parts:
+            extracted = "\n".join(text_parts)
+            logger.info(f"PDF '{path.name}' loaded via pypdf (text-based).")
+            return extracted
+
+        # ── Step 2: OCR fallback for scanned / image-only PDFs ───────────────
+        logger.warning(
+            f"PDF '{path.name}' yielded no text via pypdf — "
+            "attempting OCR fallback (pdf2image + pytesseract)."
+        )
+
+        try:
+            from pdf2image import convert_from_path
+        except ImportError:
+            raise ImportError(
+                "pdf2image is required for OCR on scanned PDFs. "
+                "Install it with: pip install pdf2image  "
+                "(also ensure poppler is installed on your system)."
+            )
+
+        try:
+            import pytesseract
+        except ImportError:
+            raise ImportError(
+                "pytesseract is required for OCR on scanned PDFs. "
+                "Install it with: pip install pytesseract  "
+                "(also ensure Tesseract-OCR binary is installed on your system)."
+            )
+
+        ocr_parts = []
+        # convert_from_path converts each PDF page into a PIL Image (300 DPI by default)
+        images = convert_from_path(str(path), dpi=300)
+        for page_num, image in enumerate(images, start=1):
+            page_text = pytesseract.image_to_string(image, lang="eng")
+            if page_text and page_text.strip():
+                ocr_parts.append(page_text)
+                logger.info(f"  OCR page {page_num}/{len(images)}: {len(page_text)} chars")
+
+        if not ocr_parts:
+            logger.warning(f"OCR produced no text for '{path.name}'.")
+            return ""
+
+        logger.info(f"PDF '{path.name}' loaded via OCR ({len(images)} pages).")
+        return "\n".join(ocr_parts)
 
     def _load_docx(self, path: Path) -> str:
         """Load Microsoft Word (.docx) file using python-docx."""

@@ -7,6 +7,12 @@ python-docx==1.2.0
 beautifulsoup4==4.15.0
 tiktoken==0.13.0
 
+# OCR support for scanned / image-based PDFs
+# Requires Tesseract-OCR binary: https://github.com/UB-Mannheim/tesseract/wiki (Windows)
+# Requires Poppler binary: https://github.com/oschwartz10612/poppler-windows/releases (Windows)
+pdf2image
+pytesseract
+
 # Web stack
 fastapi
 uvicorn[standard]
