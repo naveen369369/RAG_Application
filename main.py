@@ -10,6 +10,11 @@ Endpoints:
     POST /index           — Upload & index one or more documents
     POST /golden/discover — Map golden answer chunks in Pinecone
     GET  /golden/evaluate — Run Hit Rate @ K evaluation
+
+Observability:
+    Every /chat and /chat/stream request creates a Langfuse trace with nested
+    spans for HyDE generation, retrieval, reranking, and LLM generation.
+    Python logs are forwarded to Langfuse as trace events when enabled.
 """
 
 import os
@@ -30,10 +35,12 @@ from pydantic import BaseModel
 
 from rag.rag_pipeline import RAGPipeline
 from eval.golden_eval import discover_chunk_ids, evaluate_hit_rate
+from observability.langfuse_client import create_trace, flush_langfuse
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+
 logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
@@ -98,7 +105,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     question: str
     return_sources: bool = False
-    namespace: str = "default"
+    namespace: str = "all"
     temperature: float = 0.2
     use_reranker: bool = False
     use_hyde: bool = False
@@ -150,6 +157,16 @@ def _percentile(sorted_data: list, p: float) -> float:
     return sorted_data[lo] + (sorted_data[hi] - sorted_data[lo]) * (idx - lo)
 
 
+def _retrieval_mode(use_hyde: bool, use_reranker: bool) -> str:
+    if use_hyde and use_reranker:
+        return "HyDE + Reranker"
+    if use_hyde:
+        return "HyDE"
+    if use_reranker:
+        return "Reranker"
+    return "Semantic"
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -197,8 +214,23 @@ def chat(request: ChatRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question must not be empty.")
 
+    # --- Langfuse: start trace ---
+    trace = create_trace(
+        name="rag-chat",
+        input={"question": request.question},
+        metadata={
+            "namespace": request.namespace,
+            "use_hyde": request.use_hyde,
+            "use_reranker": request.use_reranker,
+            "temperature": request.temperature,
+            "mode": _retrieval_mode(request.use_hyde, request.use_reranker),
+        },
+        tags=["chat", "non-streaming"],
+    )
+
     try:
         _t0 = time.perf_counter()
+
         result = pipeline.query(
             question=request.question,
             namespace=request.namespace,
@@ -210,8 +242,11 @@ def chat(request: ChatRequest):
         )
         latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
         _latency_store.append(latency_ms)
+
     except Exception as exc:
         logger.error(f"/chat error: {exc}")
+        trace.update(output={"error": str(exc)})
+        flush_langfuse()
         raise HTTPException(status_code=500, detail=str(exc))
 
     sources = None
@@ -226,10 +261,19 @@ def chat(request: ChatRequest):
             for s in result["sources"]
         ]
 
+    retrieval_scores = result.get("scores", [])
+    trace.update(output={"answer": result["answer"][:500], "latency_ms": latency_ms})
+    trace.score(name="latency_ms", value=latency_ms)
+    trace.score(name="sources_retrieved", value=float(len(retrieval_scores)))
+    trace.score(name="sources_hit", value=1.0 if retrieval_scores else 0.0)
+    if retrieval_scores:
+        trace.score(name="avg_retrieval_score", value=round(sum(retrieval_scores) / len(retrieval_scores), 4))
+    flush_langfuse()
+
     return ChatResponse(
         question=result["question"],
         answer=result["answer"],
-        scores=result.get("scores", []),
+        scores=retrieval_scores,
         reranked=result.get("reranked", False),
         hyde=result.get("hyde", False),
         latency_ms=latency_ms,
@@ -251,43 +295,141 @@ def chat_stream(request: ChatRequest):
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question must not be empty.")
 
+    # Create trace BEFORE the generator (it's captured by closure)
+    trace = create_trace(
+        name="rag-chat-stream",
+        input={"question": request.question},
+        metadata={
+            "namespace": request.namespace,
+            "use_hyde": request.use_hyde,
+            "use_reranker": request.use_reranker,
+            "temperature": request.temperature,
+            "mode": _retrieval_mode(request.use_hyde, request.use_reranker),
+        },
+        tags=["chat", "streaming"],
+    )
+
     def _generate() -> Generator[str, None, None]:
         _t0 = time.perf_counter()
 
-        # HyDE already achieves perfect recall — reranker only adds risk when
-        # HyDE is active, so skip it. Only rerank when HyDE is OFF.
-        effective_reranker = request.use_reranker and not request.use_hyde
-        hyde_doc = pipeline._generate_hyde_document(request.question) if request.use_hyde else None
-        retrieval_query = hyde_doc if hyde_doc else request.question
+        # ── Greeting bypass ───────────────────────────────────────────────────
+        greeting_reply = pipeline._is_greeting(request.question)
+        if greeting_reply:
+            words = greeting_reply.split(" ")
+            for i, word in enumerate(words):
+                yield json.dumps({"t": word + (" " if i < len(words) - 1 else "")}) + "\n"
+                time.sleep(0.02)
+            latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
+            trace.update(output={"answer": greeting_reply, "type": "greeting"})
+            trace.score(name="latency_ms", value=latency_ms)
+            trace.score(name="sources_hit", value=0.0, comment="Greeting bypass — no retrieval")
+            flush_langfuse()
+            yield json.dumps({
+                "done": True,
+                "latency_ms": latency_ms,
+                "reranked": False,
+                "hyde": False,
+                "sources": [],
+            }) + "\n"
+            return
 
+        # ── HyDE generation ───────────────────────────────────────────────────
+        hyde_doc = None
+        if request.use_hyde:
+            hyde_span = trace.generation(
+                name="hyde-generation",
+                model=pipeline.llm.model_name,
+                input={"query": request.question},
+                metadata={"purpose": "Generate hypothetical document for embedding"},
+            )
+            hyde_doc = pipeline._generate_hyde_document(request.question)
+            hyde_span.end(output={"hyde_doc": hyde_doc[:300]})
+
+        retrieval_query = hyde_doc if hyde_doc else request.question
+        effective_reranker = request.use_reranker and not request.use_hyde
+
+        # ── Retrieval ─────────────────────────────────────────────────────────
         candidate_top_k = pipeline.top_k * 2 if effective_reranker else None
+        retrieval_span = trace.span(
+            name="retrieval",
+            input={
+                "query": retrieval_query[:300],
+                "namespace": request.namespace,
+                "top_k": candidate_top_k or pipeline.top_k,
+                "score_threshold": pipeline.hit_threshold,
+            },
+        )
         matches = pipeline.retrieve(
             query=retrieval_query,
             namespace=request.namespace,
             top_k_override=candidate_top_k,
+            score_threshold=pipeline.hit_threshold,
         )
+        retrieval_span.end(output={
+            "num_matches": len(matches),
+            "scores": [round(m.get("score", 0), 4) for m in matches[:10]],
+            "sources": [m["metadata"].get("source", "?") for m in matches[:5]],
+        })
 
         if not matches:
-            yield json.dumps({"t": "I couldn't find relevant context to answer your question."}) + "\n"
-            yield json.dumps({"done": True, "latency_ms": 0.0, "reranked": False, "hyde": request.use_hyde, "sources": []}) + "\n"
+            no_ctx_msg = "I couldn't find relevant context in the indexed documents to answer your question."
+            yield json.dumps({"t": no_ctx_msg}) + "\n"
+            latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
+            trace.update(output={"answer": no_ctx_msg, "type": "no_context"})
+            trace.score(name="latency_ms", value=latency_ms)
+            trace.score(name="sources_hit", value=0.0, comment="No chunks passed threshold")
+            flush_langfuse()
+            yield json.dumps({"done": True, "latency_ms": latency_ms, "reranked": False, "hyde": request.use_hyde, "sources": []}) + "\n"
             return
 
+        # ── Reranking ─────────────────────────────────────────────────────────
         if effective_reranker:
+            rerank_span = trace.span(
+                name="reranking",
+                input={
+                    "num_candidates": len(matches),
+                    "top_k": pipeline.top_k,
+                    "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                },
+            )
             matches = pipeline.rerank(query=request.question, matches=matches, top_k=pipeline.top_k)
+            rerank_span.end(output={
+                "num_kept": len(matches),
+                "scores": [round(m.get("score", 0), 4) for m in matches],
+            })
 
-        # Stream LLM tokens
+        # ── LLM streaming generation ──────────────────────────────────────────
+        context_chunks = [
+            m["metadata"]["text"] for m in matches if m.get("metadata", {}).get("text")
+        ]
+        generation_span = trace.generation(
+            name="llm-generation",
+            model=pipeline.llm.model_name,
+            input={
+                "question": request.question,
+                "context_chunks_count": len(context_chunks),
+                "temperature": request.temperature,
+            },
+        )
+
         token_stream = pipeline.generate_answer(
             query=request.question,
             context_matches=matches,
             temperature=request.temperature,
             stream=True,
         )
+
+        full_answer = ""
         for token in token_stream:
+            full_answer += token
             yield json.dumps({"t": token}) + "\n"
+
+        generation_span.end(output={"answer": full_answer[:500]})
 
         latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
         _latency_store.append(latency_ms)
 
+        # ── Sources ───────────────────────────────────────────────────────────
         sources = []
         if request.return_sources:
             sources = [
@@ -299,6 +441,26 @@ def chat_stream(request: ChatRequest):
                 }
                 for m in matches
             ]
+
+        # ── Langfuse: finalize trace with scores ──────────────────────────────
+        retrieval_scores = [round(m.get("score", 0), 4) for m in matches]
+        trace.update(output={
+            "answer": full_answer[:500],
+            "latency_ms": latency_ms,
+            "sources_count": len(matches),
+            "mode": _retrieval_mode(request.use_hyde, request.use_reranker),
+        })
+        trace.score(name="latency_ms", value=latency_ms, comment="End-to-end streaming latency in milliseconds")
+        trace.score(name="sources_retrieved", value=float(len(matches)), comment="Number of chunks retrieved after threshold")
+        trace.score(name="sources_hit", value=1.0, comment="Context was found and answer was generated")
+        if retrieval_scores:
+            trace.score(name="avg_retrieval_score", value=round(sum(retrieval_scores) / len(retrieval_scores), 4), comment="Average cosine similarity of retrieved chunks")
+        if request.use_hyde:
+            trace.score(name="hyde_used", value=1.0)
+        if effective_reranker:
+            trace.score(name="reranker_used", value=1.0)
+
+        flush_langfuse()
 
         yield json.dumps({
             "done": True,
@@ -342,6 +504,17 @@ async def index_documents(
                 ),
             )
 
+    # Langfuse trace for indexing
+    trace = create_trace(
+        name="document-indexing",
+        input={
+            "files": [f.filename for f in files],
+            "namespace": namespace,
+            "strategy": chunking_strategy,
+        },
+        tags=["indexing"],
+    )
+
     tmp_dir = tempfile.mkdtemp(prefix="rag_upload_")
     saved_paths: List[str] = []
     indexed_names: List[str] = []
@@ -363,12 +536,20 @@ async def index_documents(
         )
 
     except HTTPException:
+        trace.update(output={"error": "HTTPException"})
+        flush_langfuse()
         raise
     except Exception as exc:
         logger.error(f"/index error: {exc}")
+        trace.update(output={"error": str(exc)})
+        flush_langfuse()
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    trace.update(output={"vectors_stored": count, "files_indexed": indexed_names})
+    trace.score(name="vectors_stored", value=float(count))
+    flush_langfuse()
 
     return IndexResponse(
         message=f"Successfully indexed {len(indexed_names)} file(s).",
@@ -400,15 +581,34 @@ def golden_discover():
 def golden_evaluate(top_k: int = 3, use_reranker: bool = False, use_hyde: bool = False):
     """
     Run Hit Rate @ {top_k} evaluation over all 12 golden questions.
-
-    use_reranker=true: fetches 2×top_k candidates, reranks, then checks hit.
-    use_hyde=true    : embeds a hypothetical answer doc instead of raw question.
-    Both flags can be combined for the strongest retrieval configuration.
+    Sends results to Langfuse as a scored trace.
     """
     pipeline = get_pipeline()
+
+    trace = create_trace(
+        name="golden-evaluation",
+        input={"top_k": top_k, "use_reranker": use_reranker, "use_hyde": use_hyde},
+        tags=["evaluation", "golden"],
+        metadata={"mode": _retrieval_mode(use_hyde, use_reranker)},
+    )
+
     try:
         result = evaluate_hit_rate(pipeline, top_k=top_k, use_reranker=use_reranker, use_hyde=use_hyde)
-        return result
     except Exception as exc:
         logger.error(f"/golden/evaluate error: {exc}")
+        trace.update(output={"error": str(exc)})
+        flush_langfuse()
         raise HTTPException(status_code=500, detail=str(exc))
+
+    # Score the evaluation run in Langfuse
+    trace.update(output={
+        "hit_rate_pct": result.get("rate_pct"),
+        "hits": result.get("hits"),
+        "total": result.get("total"),
+        "mode": _retrieval_mode(use_hyde, use_reranker),
+    })
+    trace.score(name="hit_rate_pct", value=float(result.get("rate_pct", 0)), comment=f"Golden Hit Rate @ {top_k}")
+    trace.score(name="hits", value=float(result.get("hits", 0)), comment="Number of questions with correct chunk in top-k")
+    flush_langfuse()
+
+    return result

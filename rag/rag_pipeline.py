@@ -19,6 +19,7 @@ This module ties all components together into a single, easy-to-use pipeline.
 """
 
 import os
+import re
 import csv
 import json
 import logging
@@ -527,6 +528,29 @@ class RAGPipeline:
         return reranked
 
     # -------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # Conversational Helpers
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _is_greeting(text: str) -> Optional[str]:
+        """Detect conversational greetings or polite chatter."""
+        clean = (text or "").strip().lower()
+        clean = re.sub(r"[^\w\s]", "", clean).strip()
+
+        greetings = {"hi", "hello", "hey", "greetings", "good morning", "good afternoon", "good evening", "howdy", "sup"}
+        thanks = {"thanks", "thank you", "thx", "appreciate it", "many thanks"}
+        intro = {"who are you", "what are you", "what can you do", "help", "help me"}
+
+        if clean in greetings:
+            return "Hello! How can I help you with your documents today?"
+        if clean in thanks:
+            return "You're welcome! Let me know if you have any more questions."
+        if clean in intro:
+            return "I am your RAG Knowledge Assistant. You can ask me any question about your indexed documents."
+        return None
+
+    # -------------------------------------------------------------------------
     # Retrieval
     # -------------------------------------------------------------------------
 
@@ -537,6 +561,7 @@ class RAGPipeline:
         filter: Optional[Dict[str, Any]] = None,
         top_k_override: int = None,
         use_hyde: bool = False,
+        score_threshold: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
         """
         Retrieve the most relevant document chunks for a given query.
@@ -549,6 +574,8 @@ class RAGPipeline:
                 of self.top_k. Used to widen the candidate pool before reranking.
             use_hyde (bool): If True, generate a hypothetical answer first and
                 embed that instead of the raw question.
+            score_threshold (float, optional): Minimum similarity score (0.0 to 1.0)
+                required to keep a match. Matches below this threshold are discarded.
 
         Returns:
             List[Dict]: Matching document chunks with scores and metadata.
@@ -563,6 +590,14 @@ class RAGPipeline:
             namespace=namespace,
             filter=filter,
         )
+
+        threshold = score_threshold if score_threshold is not None else (self.hit_threshold or 0.65)
+        if threshold and threshold > 0:
+            filtered_matches = [m for m in matches if m.get("score", 0) >= threshold]
+            logger.info(
+                f"Score threshold ({threshold}) kept {len(filtered_matches)}/{len(matches)} matches."
+            )
+            return filtered_matches
 
         return matches
 
@@ -624,59 +659,37 @@ class RAGPipeline:
     def query(
         self,
         question: str,
-        namespace: str = "default",
+        namespace: str = "all",
         temperature: float = 0.2,
         stream: bool = False,
         return_sources: bool = False,
         use_reranker: bool = False,
         use_hyde: bool = False,
+        score_threshold: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Execute the full RAG pipeline for a given question.
-
-        Steps:
-            1. Embed the question (optionally via HyDE)
-            2. Retrieve relevant chunks from Pinecone
-               (fetches 2× top_k candidates when use_reranker=True)
-            3. Optionally rerank with cross-encoder (always uses ORIGINAL question)
-            4. Generate an answer with Groq LLM
-
-        Args:
-            question (str): The user's natural language question.
-            namespace (str): Pinecone namespace to search.
-            temperature (float): LLM generation temperature.
-            stream (bool): If True, streams the response.
-            return_sources (bool): If True, include source metadata in output.
-            use_reranker (bool): If True, apply cross-encoder reranking.
-            use_hyde (bool): If True, embed a hypothetical answer doc instead
-                of the raw question to close the question→document semantic gap.
-
-        Returns:
-            Dict with keys:
-                - 'question': The original question
-                - 'answer': The LLM-generated answer (or generator if stream=True)
-                - 'sources': List of source metadata (if return_sources=True)
-                - 'scores': List of retrieval similarity scores
-                - 'reranked': Whether cross-encoder reranking was applied
-                - 'hyde': Whether HyDE retrieval was used
         """
         logger.info(f"\n{'='*60}\nQuestion: {question}\n{'='*60}")
 
-        # Pre-generate the HyDE doc once and reuse it for BOTH retrieval and
-        # reranking. This is the key fix: the cross-encoder has the same
-        # question→document semantic gap as the bi-encoder did before HyDE.
-        # Scoring (hyde_doc, chunk) pairs instead of (question, chunk) pairs
-        # puts the cross-encoder in document space where it can judge correctly.
+        # Check for conversational greeting bypass
+        greeting_reply = self._is_greeting(question)
+        if greeting_reply:
+            logger.info(f"Greeting detected: '{question}' -> direct response.")
+            return {
+                "question": question,
+                "answer": greeting_reply,
+                "sources": [],
+                "scores": [],
+                "reranked": False,
+                "hyde": False,
+            }
+
         hyde_doc = self._generate_hyde_document(question) if use_hyde else None
         if hyde_doc:
             logger.info(f"HyDE doc: {hyde_doc[:80]}…")
 
-        # retrieval_query is the hyde doc (if generated) or the raw question
         retrieval_query = hyde_doc if hyde_doc else question
-
-        # HyDE already achieves perfect top-k recall on its own — the reranker
-        # adds no benefit and can demote correct chunks due to its own model
-        # biases. Only use reranker when HyDE is OFF.
         effective_reranker = use_reranker and not use_hyde
         candidate_top_k = self.top_k * 2 if effective_reranker else None
 
@@ -684,13 +697,14 @@ class RAGPipeline:
             query=retrieval_query,
             namespace=namespace,
             top_k_override=candidate_top_k,
+            score_threshold=score_threshold,
         )
 
         if not matches:
-            logger.warning("No relevant documents found.")
+            logger.warning("No relevant documents found exceeding similarity threshold.")
             return {
                 "question": question,
-                "answer": "I couldn't find relevant context to answer your question.",
+                "answer": "I couldn't find relevant context in the indexed documents to answer your question.",
                 "sources": [],
                 "scores": [],
                 "reranked": False,
@@ -730,3 +744,4 @@ class RAGPipeline:
             ]
 
         return result
+

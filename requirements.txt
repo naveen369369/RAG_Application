@@ -16,6 +16,7 @@ pytesseract
 # Web stack
 fastapi
 uvicorn[standard]
-streamlit
 python-multipart
-httpx
+
+# Observability
+langfuse==2.60.10
