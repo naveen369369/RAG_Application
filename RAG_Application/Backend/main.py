@@ -35,7 +35,8 @@ from pydantic import BaseModel
 
 from rag.rag_pipeline import RAGPipeline
 from eval.golden_eval import discover_chunk_ids, evaluate_hit_rate
-from observability.langfuse_client import create_trace, flush_langfuse
+from eval.llm_judge import LLMJudge
+from observability.langfuse_client import create_trace, flush_langfuse, is_enabled
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -268,6 +269,21 @@ def chat(request: ChatRequest):
     trace.score(name="sources_hit", value=1.0 if retrieval_scores else 0.0)
     if retrieval_scores:
         trace.score(name="avg_retrieval_score", value=round(sum(retrieval_scores) / len(retrieval_scores), 4))
+
+    # --- LLM-as-a-Judge: Groq-powered free evaluation (faithfulness, relevancy, context utilization)
+    if is_enabled() and result.get("sources"):
+        try:
+            context_chunks = [s["text"] for s in result["sources"]]
+            judge = LLMJudge(groq_client=pipeline.llm.client)
+            judge.score_trace(
+                trace=trace,
+                question=request.question,
+                context_chunks=context_chunks,
+                answer=result["answer"],
+            )
+        except Exception as _judge_exc:
+            logger.warning(f"LLM judge scoring skipped: {_judge_exc}")
+
     flush_langfuse()
 
     return ChatResponse(
@@ -459,6 +475,19 @@ def chat_stream(request: ChatRequest):
             trace.score(name="hyde_used", value=1.0)
         if effective_reranker:
             trace.score(name="reranker_used", value=1.0)
+
+        # ── LLM-as-a-Judge: Groq-powered evaluation for live stream chat ──────
+        if is_enabled() and context_chunks and full_answer:
+            try:
+                judge = LLMJudge(groq_client=pipeline.llm.client)
+                judge.score_trace(
+                    trace=trace,
+                    question=request.question,
+                    context_chunks=context_chunks,
+                    answer=full_answer,
+                )
+            except Exception as _judge_exc:
+                logger.warning(f"LLM judge streaming scoring skipped: {_judge_exc}")
 
         flush_langfuse()
 

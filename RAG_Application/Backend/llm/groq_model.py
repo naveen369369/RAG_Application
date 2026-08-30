@@ -28,10 +28,12 @@ If the answer cannot be found in the context, clearly state that you don't have
 enough information to answer. Do not make up information or use knowledge outside 
 the provided context.
 
-When answering:
-- Be concise and precise
-- Quote or reference relevant parts of the context when appropriate
-- If the context is insufficient, say so honestly
+CRITICAL INSTRUCTIONS:
+- You MUST include ALL specific numeric values, time windows, deadlines, fees, exceptions, and eligibility conditions from the provided context.
+- NEVER add information, assumptions, navigation paths, or policies not present in the context.
+- Be concise, accurate, and precise.
+- Quote or reference relevant parts of the context when appropriate.
+- If the context does not contain enough information to fully answer the question, state that clearly and honestly without guessing.
 """
 
 
