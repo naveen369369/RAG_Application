@@ -20,3 +20,15 @@ python-multipart
 
 # Observability
 langfuse==2.60.10
+
+# Agent framework (LangChain / LangGraph)
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-groq>=0.2.0
+langchain-core>=0.3.0
+
+# Long-term memory
+mem0ai>=0.1.0
+
+# Web search fallback
+httpx>=0.27.0

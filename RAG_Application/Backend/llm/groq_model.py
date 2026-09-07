@@ -69,9 +69,8 @@ class GroqModel:
                 "GROQ_API_KEY not found. Please set it in your .env file."
             )
 
-        self.model_name = model_name or os.getenv(
-            "GROQ_MODEL_NAME", "llama3-8b-8192"
-        )
+        raw = model_name or os.getenv("GROQ_MODEL_NAME", "llama3-8b-8192")
+        self.model_name = raw.removeprefix("groq/")
         self.client = Groq(api_key=self.api_key)
         logger.info(f"Groq LLM initialized with model: {self.model_name}")
 
@@ -139,6 +138,11 @@ class GroqModel:
         )
 
         answer = response.choices[0].message.content.strip()
+        self.last_usage = {
+            "input": response.usage.prompt_tokens,
+            "output": response.usage.completion_tokens,
+            "unit": "TOKENS",
+        } if getattr(response, "usage", None) else None
         logger.info("Response received from Groq.")
         return answer
 
@@ -164,18 +168,26 @@ class GroqModel:
         messages = self.build_prompt(query, context_chunks)
         logger.info(f"Streaming request to Groq [{self.model_name}]...")
 
+        self.last_stream_usage = None
         stream = self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
+            stream_options={"include_usage": True},
         )
 
         for chunk in stream:
-            content = chunk.choices[0].delta.content
+            content = chunk.choices[0].delta.content if chunk.choices else None
             if content:
                 yield content
+            if getattr(chunk, "usage", None):
+                self.last_stream_usage = {
+                    "input": chunk.usage.prompt_tokens,
+                    "output": chunk.usage.completion_tokens,
+                    "unit": "TOKENS",
+                }
 
     def list_available_models(self) -> List[str]:
         """

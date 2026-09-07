@@ -18,6 +18,13 @@ Observability:
 """
 
 import os
+
+# Must be set before numpy/torch/scipy are imported to prevent OpenBLAS memory conflicts on Windows
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 import re
 import time
 import json
@@ -37,6 +44,9 @@ from rag.rag_pipeline import RAGPipeline
 from eval.golden_eval import discover_chunk_ids, evaluate_hit_rate
 from eval.llm_judge import LLMJudge
 from observability.langfuse_client import create_trace, flush_langfuse, is_enabled
+from agent.schemas import AgentRequest, WorkflowRequest
+from agent.memory.short_term import SessionStore
+from agent.memory.long_term import LongTermMemory
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -61,22 +71,26 @@ _latency_store: deque = deque(maxlen=1000)
 
 class AppState:
     pipeline: Optional[RAGPipeline] = None
+    session_store: Optional[SessionStore] = None
+    long_term_memory: Optional[LongTermMemory] = None
 
 app_state = AppState()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize the RAG pipeline once at startup and hold it for the app's lifetime."""
+    """Initialize the RAG pipeline and agent memory once at startup."""
     logger.warning("Initializing RAG Pipeline...")
     try:
         app_state.pipeline = RAGPipeline()
-        logger.warning("RAG Pipeline initialized successfully.")
+        app_state.session_store = SessionStore()
+        app_state.long_term_memory = LongTermMemory(app_state.pipeline)
+        logger.warning("RAG Pipeline and agent memory initialized successfully.")
     except Exception as exc:
-        logger.error(f"Failed to initialize RAG Pipeline: {exc}")
+        logger.error(f"Failed to initialize: {exc}")
         raise
     yield
-    logger.warning("Shutting down RAG Pipeline.")
+    logger.warning("Shutting down.")
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +278,17 @@ def chat(request: ChatRequest):
 
     retrieval_scores = result.get("scores", [])
     trace.update(output={"answer": result["answer"][:500], "latency_ms": latency_ms})
+
+    # Generation observation — enables token count + cost in Langfuse
+    gen_usage = getattr(pipeline.llm, "last_usage", None)
+    gen_obs = trace.generation(
+        name="llm-generation",
+        model=pipeline.llm.model_name,
+        input={"question": request.question, "context_chunks": len(retrieval_scores)},
+        usage=gen_usage,
+    )
+    gen_obs.end(output={"answer": result["answer"][:500]})
+
     trace.score(name="latency_ms", value=latency_ms)
     trace.score(name="sources_retrieved", value=float(len(retrieval_scores)))
     trace.score(name="sources_hit", value=1.0 if retrieval_scores else 0.0)
@@ -440,7 +465,8 @@ def chat_stream(request: ChatRequest):
             full_answer += token
             yield json.dumps({"t": token}) + "\n"
 
-        generation_span.end(output={"answer": full_answer[:500]})
+        stream_usage = getattr(pipeline.llm, "last_stream_usage", None)
+        generation_span.end(output={"answer": full_answer[:500]}, usage=stream_usage)
 
         latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
         _latency_store.append(latency_ms)
@@ -641,3 +667,112 @@ def golden_evaluate(top_k: int = 3, use_reranker: bool = False, use_hyde: bool =
     flush_langfuse()
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Agent Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/agent/stream", tags=["Agent"])
+def agent_stream(request: AgentRequest):
+    """
+    Run the ReAct agent and stream NDJSON events.
+
+    Event types:
+      {"event":"start","session_id":"..."}
+      {"event":"thought","text":"..."}
+      {"event":"tool_start","tool":"...","args":{...}}
+      {"event":"tool_result","tool":"...","result":{...}}
+      {"event":"token","t":"..."}
+      {"event":"done","latency_ms":N,"tool_calls_made":N,"budget":{...}}
+      {"event":"budget_hit","reason":"...","partial_answer":"..."}
+      {"event":"error","detail":"..."}
+    """
+    pipeline = get_pipeline()
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question must not be empty.")
+
+    from agent.react_agent import stream_agent
+
+    def _generate():
+        for line in stream_agent(
+            pipeline=pipeline,
+            question=request.question,
+            customer_id=request.customer_id,
+            item_status=request.item_status,
+            session_id=request.session_id,
+            temperature=request.temperature,
+            budget_config=request.budget_config,
+            session_store=app_state.session_store,
+            long_term=app_state.long_term_memory,
+        ):
+            yield line + "\n"
+
+    return StreamingResponse(_generate(), media_type="application/x-ndjson")
+
+
+@app.post("/workflow/stream", tags=["Workflow"])
+def workflow_stream(request: WorkflowRequest):
+    """
+    Run the fixed 5-step workflow and stream NDJSON step events.
+
+    Event types:
+      {"event":"step_start","step":"route_namespace"}
+      {"event":"step_done","step":"route_namespace","result":{...}}
+      {"event":"token","t":"..."}
+      {"event":"done","latency_ms":N,"total_tokens":N,"cost_usd":N}
+    """
+    pipeline = get_pipeline()
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question must not be empty.")
+
+    from agent.workflow import stream_workflow
+
+    def _generate():
+        for line in stream_workflow(
+            pipeline=pipeline,
+            question=request.question,
+            customer_id=request.customer_id,
+            item_status=request.item_status,
+            namespace=request.namespace,
+        ):
+            yield line + "\n"
+
+    return StreamingResponse(_generate(), media_type="application/x-ndjson")
+
+
+@app.post("/race", tags=["Race"])
+def run_race_endpoint():
+    """
+    Run the 10-ticket Agent vs Workflow race.
+    Streams NDJSON progress events as each ticket completes.
+    Final event: {"event":"race_complete","summary":{...},"verdict":"..."}
+    """
+    pipeline = get_pipeline()
+
+    from agent.race import run_race
+    import queue
+    import threading
+
+    event_queue: queue.Queue = queue.Queue()
+
+    def _callback(evt):
+        event_queue.put(evt)
+
+    def _run():
+        try:
+            run_race(pipeline, stream_callback=_callback)
+        finally:
+            event_queue.put(None)  # sentinel
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    def _generate():
+        while True:
+            evt = event_queue.get()
+            if evt is None:
+                break
+            yield json.dumps(evt) + "\n"
+
+    return StreamingResponse(_generate(), media_type="application/x-ndjson")

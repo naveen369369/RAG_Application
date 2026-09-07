@@ -3,31 +3,63 @@ import { AppProvider, useAppContext } from './context/AppContext'
 import { Sidebar } from './components/Sidebar/Sidebar'
 import { ChatFeed } from './components/Chat/ChatFeed'
 import { useChat } from './hooks/useChat'
+import { useAgent } from './hooks/useAgent'
+import RaceDrawer from './components/Race/RaceDrawer'
+import EvaluationDrawer from './components/Sidebar/EvaluationDrawer'
+import DocumentStudioModal from './components/Sidebar/DocumentStudioModal'
+
+const SIDEBAR_MIN = 220
+const SIDEBAR_MAX = 520
+const SIDEBAR_DEFAULT = 300
 
 function RAGApp() {
-  const { namespace, showSources, useHyde, useReranker } = useAppContext()
-  const { messages, streaming, sendMessage, clearMessages } = useChat()
+  const { namespace, showSources, useHyde, useReranker, agentMode, sessionId } = useAppContext()
+  const { messages: chatMessages, streaming: chatStreaming, sendMessage: sendChat, clearMessages: clearChat } = useChat()
+  const { messages: agentMessages, streaming: agentStreaming, sendMessage: sendAgent, clearMessages: clearAgent } = useAgent()
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    parseInt(localStorage.getItem('sidebar_width') || String(SIDEBAR_DEFAULT), 10)
+  )
+  const [resizing, setResizing] = useState(false)
+
+  const messages = agentMode ? agentMessages : chatMessages
+  const streaming = agentMode ? agentStreaming : chatStreaming
 
   const handleSend = useCallback((question) => {
-    sendMessage({
-      question,
-      namespace,
-      return_sources: showSources,
-      use_hyde: useHyde,
-      use_reranker: useReranker,
-      temperature: 0.2,
-    })
-  }, [namespace, showSources, useHyde, useReranker, sendMessage])
+    if (agentMode) {
+      sendAgent({
+        question,
+        customer_id: 'C001',
+        session_id: sessionId,
+        temperature: 0.2,
+        return_sources: showSources,
+        namespace,
+      })
+    } else {
+      sendChat({
+        question,
+        namespace,
+        return_sources: showSources,
+        use_hyde: useHyde,
+        use_reranker: useReranker,
+        temperature: 0.2,
+      })
+    }
+  }, [agentMode, namespace, showSources, useHyde, useReranker, sessionId, sendAgent, sendChat])
 
   const handleNewChat = useCallback(() => {
-    clearMessages()
-  }, [clearMessages])
+    if (agentMode) clearAgent()
+    else clearChat()
+  }, [agentMode, clearAgent, clearChat])
 
   const toggleSidebar = useCallback(() => setSidebarOpen(o => !o), [])
 
   return (
     <div className="flex h-screen overflow-hidden bg-white">
+      {/* Overlays rendered outside sidebar so they cover the full viewport */}
+      <RaceDrawer />
+      <EvaluationDrawer />
+      <DocumentStudioModal />
       {/* Mobile overlay backdrop */}
       {sidebarOpen && (
         <div
@@ -36,22 +68,42 @@ function RAGApp() {
         />
       )}
 
-      {/* Desktop sidebar — push layout (collapses to 0px, content fills space) */}
+      {/* Desktop sidebar — width driven by state; transition disabled during drag */}
       <div
-        className={`hidden lg:flex flex-shrink-0 overflow-hidden transition-all duration-300 ease-in-out ${
-          sidebarOpen ? 'w-[280px]' : 'w-0'
-        }`}
+        className="hidden lg:flex flex-shrink-0 overflow-hidden"
+        style={{
+          width: sidebarOpen ? sidebarWidth : 0,
+          transition: resizing ? 'none' : 'width 300ms ease-in-out',
+        }}
       >
-        <Sidebar onNewChat={handleNewChat} />
+        <Sidebar
+          onNewChat={handleNewChat}
+          width={sidebarWidth}
+          onWidthChange={(w) => {
+            setSidebarWidth(w)
+            localStorage.setItem('sidebar_width', String(w))
+          }}
+          onResizeStart={() => setResizing(true)}
+          onResizeEnd={() => setResizing(false)}
+          minWidth={SIDEBAR_MIN}
+          maxWidth={SIDEBAR_MAX}
+        />
       </div>
 
-      {/* Mobile sidebar — slide-in overlay */}
+      {/* Mobile sidebar — fixed width slide-in overlay */}
       <div
-        className={`fixed inset-y-0 left-0 z-30 w-[280px] lg:hidden transform transition-transform duration-300 ease-in-out ${
+        className={`fixed inset-y-0 left-0 z-30 lg:hidden transform transition-transform duration-300 ease-in-out ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
         }`}
+        style={{ width: sidebarWidth }}
       >
-        <Sidebar onNewChat={() => { handleNewChat(); setSidebarOpen(false) }} />
+        <Sidebar
+          onNewChat={() => { handleNewChat(); setSidebarOpen(false) }}
+          width={sidebarWidth}
+          onWidthChange={() => {}}
+          minWidth={SIDEBAR_MIN}
+          maxWidth={SIDEBAR_MAX}
+        />
       </div>
 
       {/* Main area */}

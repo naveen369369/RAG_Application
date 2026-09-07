@@ -23,6 +23,7 @@ Usage (in /chat endpoint):
 
 import json
 import logging
+import time
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -148,30 +149,41 @@ class LLMJudge:
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.0,   # Deterministic — evaluations must be reproducible
+                temperature=0.0,
                 max_tokens=256,
             )
             raw = response.choices[0].message.content.strip()
 
-            # Try direct load, then regex extraction
+            usage = {
+                "input": response.usage.prompt_tokens,
+                "output": response.usage.completion_tokens,
+                "unit": "TOKENS",
+            } if getattr(response, "usage", None) else None
+
             try:
                 if raw.startswith("```"):
                     raw_clean = raw.split("```")[1]
                     if raw_clean.startswith("json"):
                         raw_clean = raw_clean[4:]
-                    return json.loads(raw_clean.strip())
-                return json.loads(raw)
+                    result = json.loads(raw_clean.strip())
+                else:
+                    result = json.loads(raw)
             except json.JSONDecodeError:
                 import re
                 match = re.search(r'\{[^{}]*"score"[^{}]*\}', raw, re.DOTALL)
                 if match:
-                    return json.loads(match.group(0))
-                # Fallback to broader JSON regex
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if match:
-                    return json.loads(match.group(0))
-                logger.warning(f"LLMJudge: could not parse JSON from: {raw[:100]}...")
-                return None
+                    result = json.loads(match.group(0))
+                else:
+                    match = re.search(r'\{.*\}', raw, re.DOTALL)
+                    if match:
+                        result = json.loads(match.group(0))
+                    else:
+                        logger.warning(f"LLMJudge: could not parse JSON from: {raw[:100]}...")
+                        return None
+
+            if result is not None:
+                result["_usage"] = usage
+            return result
 
         except Exception as exc:
             logger.warning(f"LLMJudge: Groq call failed — {exc}")
@@ -224,10 +236,15 @@ class LLMJudge:
             }
         """
         context = "\n\n---\n\n".join(context_chunks)
+        faith = self.score_faithfulness(question, context, answer)
+        time.sleep(0.5)
+        relev = self.score_answer_relevancy(question, answer)
+        time.sleep(0.5)
+        ctx = self.score_context_utilization(question, context, answer)
         return {
-            "faithfulness":        self.score_faithfulness(question, context, answer),
-            "answer_relevancy":    self.score_answer_relevancy(question, answer),
-            "context_utilization": self.score_context_utilization(question, context, answer),
+            "faithfulness":        faith,
+            "answer_relevancy":    relev,
+            "context_utilization": ctx,
         }
 
     # ── Langfuse integration — push scores directly onto a trace ────────────
@@ -254,8 +271,15 @@ class LLMJudge:
             scores = self.evaluate_all(question, context_chunks, answer)
             for metric_name, result in scores.items():
                 if result.get("score") is not None:
+                    gen = trace.generation(
+                        name=f"judge-{metric_name}",
+                        model=self.judge_model,
+                        input={"metric": metric_name, "question": question[:200]},
+                        usage=result.get("_usage"),
+                    )
+                    gen.end(output={"score": result["score"], "reason": result.get("reason", "")})
                     trace.score(
-                        name=f"llm_judge_{metric_name}",   # e.g. "llm_judge_faithfulness"
+                        name=f"llm_judge_{metric_name}",
                         value=float(result["score"]),
                         comment=result.get("reason", ""),
                     )

@@ -15,11 +15,12 @@ build/
 venv/
 env/
 .venv/
+
+# Sensitive config — NEVER commit real API keys!
+.env
 .env.local
 .env.production
-
-# Sensitive config — never commit real keys!
-.env
+.env.staging
 
 # IDE
 .vscode/
@@ -30,13 +31,28 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
-# macOS
+# macOS / Windows
 .DS_Store
+Thumbs.db
 
 # Logs
 *.log
 logs/
 
-# Model cache (can be large)
+# Model cache (large, re-downloadable)
 .cache/
 models/
+
+# ── Race / evaluation output (generated at runtime, not source code) ──
+agent/race_results/
+
+# ── Uploaded documents (user data, not source code) ──
+documents/
+
+# ── Analysis outputs (generated reports) ──
+analysis/
+
+# ── Frontend (add a separate .gitignore in the frontend folder too) ──
+../Frontend/rag_app/node_modules/
+../Frontend/rag_app/dist/
+../Frontend/rag_app/.next/
