@@ -422,39 +422,59 @@ def create_dataset():
     lf = Langfuse(public_key=pub, secret_key=sec, host=host)
     logger.info(f"Connected to Langfuse at {host}")
 
+    # ── Load context chunks from eval_results_latest.json if available ───────
+    context_map = {}
+    results_file = Path(__file__).resolve().parent / "eval_results_latest.json"
+    if results_file.exists():
+        try:
+            import json
+            with open(results_file, "r", encoding="utf-8") as f:
+                for item in json.load(f):
+                    c_list = item.get("context_chunks", [])
+                    if c_list:
+                        context_map[item.get("id")] = "\n\n---\n\n".join(c_list)
+        except Exception as e:
+            logger.warning(f"Could not load context chunks: {e}")
+
     # ── Create or get dataset ────────────────────────────────────────────────
-    logger.info(f"Creating dataset: '{DATASET_NAME}'")
-    dataset = lf.create_dataset(
-        name=DATASET_NAME,
-        description=DATASET_DESCRIPTION,
-        metadata={
-            "version": "1.0",
-            "total_items": len(GOLDEN_QA_25),
-            "namespaces": [
-                "Account Management & Login Issues",
-                "Billing & Payment Support",
-                "Product Returns & Refund Policy",
-                "Technical Troubleshooting Guide",
-                "Shipping & Delivery Information",
-                "Customer Escalation & Complaint Resolution",
-            ],
-        },
-    )
-    logger.info(f"Dataset created: {dataset.name}")
+    logger.info(f"Connecting to dataset: '{DATASET_NAME}'")
+    try:
+        dataset = lf.get_dataset(name=DATASET_NAME)
+        logger.info(f"Found existing dataset: {dataset.name}")
+    except Exception:
+        dataset = lf.create_dataset(
+            name=DATASET_NAME,
+            description=DATASET_DESCRIPTION,
+            metadata={
+                "version": "2.0",
+                "total_items": len(GOLDEN_QA_25),
+                "namespaces": [
+                    "Account Management & Login Issues",
+                    "Billing & Payment Support",
+                    "Product Returns & Refund Policy",
+                    "Technical Troubleshooting Guide",
+                    "Shipping & Delivery Information",
+                    "Customer Escalation & Complaint Resolution",
+                ],
+            },
+        )
+        logger.info(f"Dataset created: {dataset.name}")
 
     # ── Upload each Q&A pair as a Dataset Item ───────────────────────────────
     success_count = 0
     for qa in GOLDEN_QA_25:
         try:
+            ctx = context_map.get(qa["id"], f"Policy documentation regarding {qa['namespace']}.")
             lf.create_dataset_item(
                 dataset_name=DATASET_NAME,
                 input={
-                    "question": qa["question"],
+                    "input": qa["question"],       # Matches Langfuse prompt variable {{input}}
+                    "question": qa["question"],    # Backward compatibility
+                    "context": ctx,                # Matches Langfuse prompt variable {{context}}
+                    "output": qa["answer"],        # Matches Langfuse prompt variable {{output}}
                     "namespace": qa["namespace"],
                 },
-                expected_output={
-                    "answer": qa["answer"],
-                },
+                expected_output=qa["answer"],      # Text string as expected by Langfuse UI
                 metadata={
                     "id": qa["id"],
                     "category": qa["namespace"],

@@ -50,11 +50,28 @@ _init()
 # ---------------------------------------------------------------------------
 
 class _NoOpObj:
-    def span(self, **kw): return _NoOpObj()
+    """Returned for every API call when Langfuse is disabled.
+    Supports the full observation chain: trace → span → generation → score.
+    """
+    def __init__(self, *args, **kwargs):
+        pass
+
+    # Observation creation — all return another no-op so chaining works
+    def span(self, **kw):       return _NoOpObj()
     def generation(self, **kw): return _NoOpObj()
-    def score(self, **kw): return self
+    def event(self, **kw):      return _NoOpObj()
+
+    # Mutation / lifecycle
+    def score(self, **kw):  return self
     def update(self, **kw): return self
-    def end(self, **kw): return self
+    def end(self, **kw):    return self
+
+    # Attribute stubs used by callers
+    @property
+    def id(self):       return None
+    @property
+    def trace_id(self): return None
+    def get_trace_url(self): return ""
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +91,11 @@ def create_trace(**kwargs):
     except Exception as exc:
         logger.debug(f"create_trace failed: {exc}")
         return _NoOpObj()
+
+
+def get_langfuse():
+    """Return the raw Langfuse client (None if disabled)."""
+    return _langfuse if _enabled else None
 
 
 def flush_langfuse():

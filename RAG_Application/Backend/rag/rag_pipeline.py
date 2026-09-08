@@ -602,6 +602,132 @@ class RAGPipeline:
         return matches
 
     # -------------------------------------------------------------------------
+    # Hybrid Retrieval — Dense (cosine) + BM25 keyword scoring
+    # -------------------------------------------------------------------------
+
+    def hybrid_retrieve(
+        self,
+        query: str,
+        namespace: str = "default",
+        top_k: int = 5,
+        score_threshold: Optional[float] = None,
+        dense_weight: float = 0.7,
+        bm25_weight: float = 0.3,
+    ) -> List[Dict[str, Any]]:
+        """
+        Hybrid retrieval combining dense vector search with BM25 keyword scoring.
+
+        Strategy:
+          1. Dense retrieval: fetch top_k * 3 candidates from Pinecone (wider net)
+          2. BM25 keyword scoring: score each candidate chunk against the query terms
+          3. Combine scores: hybrid = dense_weight * dense + bm25_weight * bm25
+          4. Return top_k results sorted by hybrid score
+
+        This catches exact-match keyword questions that semantic search misses,
+        without requiring a sparse-dense Pinecone index.
+
+        Args:
+            query:           User's search query.
+            namespace:       Pinecone namespace to search.
+            top_k:           Final number of results to return.
+            score_threshold: Minimum dense score to keep a candidate.
+            dense_weight:    Weight for cosine similarity (default 0.7).
+            bm25_weight:     Weight for BM25 keyword score (default 0.3).
+
+        Returns:
+            List of hybrid-scored document chunks, sorted by hybrid score desc.
+        """
+        import math
+        import re as _re
+
+        # Step 1: Dense retrieval — fetch 3× more candidates than needed
+        candidates = self.retrieve(
+            query=query,
+            namespace=namespace,
+            top_k_override=top_k * 3,
+            score_threshold=score_threshold,
+        )
+        if not candidates:
+            return []
+
+        # Step 2: BM25 keyword scoring
+        # Tokenise query into terms
+        query_terms = set(_re.findall(r"\b\w+\b", query.lower()))
+
+        def _bm25_score(text: str, query_terms: set, k1: float = 1.5, b: float = 0.75) -> float:
+            """Compute a simplified BM25 score for a single document."""
+            if not text:
+                return 0.0
+            doc_terms = _re.findall(r"\b\w+\b", text.lower())
+            doc_len = len(doc_terms)
+            if doc_len == 0:
+                return 0.0
+            avg_dl = 100.0  # approximate average doc length
+            term_freq: Dict[str, int] = {}
+            for t in doc_terms:
+                term_freq[t] = term_freq.get(t, 0) + 1
+
+            score = 0.0
+            n_docs = len(candidates)
+            for term in query_terms:
+                tf = term_freq.get(term, 0)
+                if tf == 0:
+                    continue
+                # IDF approximation: log((N - n + 0.5) / (n + 0.5)) where n = docs with term
+                n_with_term = sum(
+                    1 for c in candidates
+                    if term in _re.findall(r"\b\w+\b", c.get("metadata", {}).get("text", "").lower())
+                )
+                idf = math.log((n_docs - n_with_term + 0.5) / (n_with_term + 0.5) + 1)
+                tf_norm = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_dl))
+                score += idf * tf_norm
+            return score
+
+        # Compute BM25 scores for all candidates
+        bm25_scores = []
+        for c in candidates:
+            text = c.get("metadata", {}).get("text", "")
+            bm25_scores.append(_bm25_score(text, query_terms))
+
+        # Normalise BM25 scores to [0, 1]
+        max_bm25 = max(bm25_scores) if bm25_scores else 1.0
+        if max_bm25 == 0:
+            max_bm25 = 1.0
+
+        hybrid_results = []
+        for i, c in enumerate(candidates):
+            dense_score = c.get("score", 0.0) if hasattr(c, "get") else getattr(c, "score", 0.0)
+            bm25_norm = bm25_scores[i] / max_bm25
+            hybrid_score = dense_weight * dense_score + bm25_weight * bm25_norm
+            c_meta = c.get("metadata", {}) if hasattr(c, "get") else getattr(c, "metadata", {})
+            if hasattr(c_meta, "to_dict"):
+                c_meta = c_meta.to_dict()
+            elif isinstance(c_meta, dict):
+                c_meta = dict(c_meta)
+            else:
+                c_meta = {}
+            c_id = c.get("id", "") if hasattr(c, "get") else getattr(c, "id", "")
+            c_copy = {
+                "id": c_id,
+                "score": round(hybrid_score, 4),
+                "dense_score": round(dense_score, 4),
+                "bm25_score": round(bm25_norm, 4),
+                "metadata": c_meta,
+            }
+            hybrid_results.append(c_copy)
+
+        # Step 4: Sort by hybrid score and return top_k
+        hybrid_results.sort(key=lambda x: x["score"], reverse=True)
+        top_results = hybrid_results[:top_k]
+
+        logger.info(
+            f"Hybrid retrieve: {len(candidates)} dense candidates → "
+            f"top {len(top_results)} after BM25 re-scoring "
+            f"(dense_w={dense_weight}, bm25_w={bm25_weight})"
+        )
+        return top_results
+
+    # -------------------------------------------------------------------------
     # Generation
     # -------------------------------------------------------------------------
 
@@ -632,7 +758,12 @@ class RAGPipeline:
         ]
 
         if not context_chunks:
-            return "I could not find relevant information to answer your question."
+            msg = "I could not find relevant information to answer your question."
+            if stream:
+                def _empty_stream():
+                    yield msg
+                return _empty_stream()
+            return msg
 
         if stream:
             return self.llm.generate_stream(

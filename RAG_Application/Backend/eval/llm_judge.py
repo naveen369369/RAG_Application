@@ -31,8 +31,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Judge model — use a larger/smarter model than the generation model
 # openai/gpt-oss-120b is available on Groq and excellent for evaluation
-# ---------------------------------------------------------------------------
-DEFAULT_JUDGE_MODEL = "openai/gpt-oss-120b"
+import os
+
+DEFAULT_JUDGE_MODEL = os.getenv("GROQ_JUDGE_MODEL_NAME") or os.getenv("GROQ_MODEL_NAME") or "openai/gpt-oss-20b"
 
 
 # ---------------------------------------------------------------------------

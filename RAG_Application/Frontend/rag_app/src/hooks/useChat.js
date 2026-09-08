@@ -39,12 +39,16 @@ export function useChat() {
           })
         }
       }
-    } catch {
+    } catch (err) {
       setMessages(prev => {
         const next = [...prev]
+        const lastMsg = next[next.length - 1]
+        const fallbackText = fullContent
+          ? `${fullContent}\n\n*(Response was interrupted. Please try again or rephrase your question.)*`
+          : "I apologize, but I'm currently unable to retrieve that information. Please verify your connection or try rephrasing your question."
         next[next.length - 1] = {
           role: 'assistant',
-          content: 'Error: Could not connect to the backend. Make sure `uvicorn main:app --port 8000` is running.',
+          content: fallbackText,
           streaming: false,
           error: true,
         }

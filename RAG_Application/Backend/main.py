@@ -352,178 +352,190 @@ def chat_stream(request: ChatRequest):
 
     def _generate() -> Generator[str, None, None]:
         _t0 = time.perf_counter()
+        try:
+            # ── Greeting bypass ───────────────────────────────────────────────────
+            greeting_reply = pipeline._is_greeting(request.question)
+            if greeting_reply:
+                words = greeting_reply.split(" ")
+                for i, word in enumerate(words):
+                    yield json.dumps({"t": word + (" " if i < len(words) - 1 else "")}) + "\n"
+                    time.sleep(0.02)
+                latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
+                trace.update(output={"answer": greeting_reply, "type": "greeting"})
+                trace.score(name="latency_ms", value=latency_ms)
+                trace.score(name="sources_hit", value=0.0, comment="Greeting bypass — no retrieval")
+                flush_langfuse()
+                yield json.dumps({
+                    "done": True,
+                    "latency_ms": latency_ms,
+                    "reranked": False,
+                    "hyde": False,
+                    "sources": [],
+                }) + "\n"
+                return
 
-        # ── Greeting bypass ───────────────────────────────────────────────────
-        greeting_reply = pipeline._is_greeting(request.question)
-        if greeting_reply:
-            words = greeting_reply.split(" ")
-            for i, word in enumerate(words):
-                yield json.dumps({"t": word + (" " if i < len(words) - 1 else "")}) + "\n"
-                time.sleep(0.02)
+            # ── HyDE generation ───────────────────────────────────────────────────
+            hyde_doc = None
+            if request.use_hyde:
+                hyde_span = trace.generation(
+                    name="hyde-generation",
+                    model=pipeline.llm.model_name,
+                    input={"query": request.question},
+                    metadata={"purpose": "Generate hypothetical document for embedding"},
+                )
+                hyde_doc = pipeline._generate_hyde_document(request.question)
+                hyde_span.end(output={"hyde_doc": hyde_doc[:300]})
+
+            retrieval_query = hyde_doc if hyde_doc else request.question
+            effective_reranker = request.use_reranker and not request.use_hyde
+
+            # ── Retrieval ─────────────────────────────────────────────────────────
+            candidate_top_k = pipeline.top_k * 2 if effective_reranker else None
+            retrieval_span = trace.span(
+                name="retrieval",
+                input={
+                    "query": retrieval_query[:300],
+                    "namespace": request.namespace,
+                    "top_k": candidate_top_k or pipeline.top_k,
+                    "score_threshold": pipeline.hit_threshold,
+                },
+            )
+            matches = pipeline.retrieve(
+                query=retrieval_query,
+                namespace=request.namespace,
+                top_k_override=candidate_top_k,
+                score_threshold=pipeline.hit_threshold,
+            )
+            retrieval_span.end(output={
+                "num_matches": len(matches),
+                "scores": [round(m.get("score", 0), 4) for m in matches[:10]],
+                "sources": [m["metadata"].get("source", "?") for m in matches[:5]],
+            })
+
+            if not matches:
+                no_ctx_msg = "I couldn't find relevant context in the indexed documents to answer your question."
+                yield json.dumps({"t": no_ctx_msg}) + "\n"
+                latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
+                trace.update(output={"answer": no_ctx_msg, "type": "no_context"})
+                trace.score(name="latency_ms", value=latency_ms)
+                trace.score(name="sources_hit", value=0.0, comment="No chunks passed threshold")
+                flush_langfuse()
+                yield json.dumps({"done": True, "latency_ms": latency_ms, "reranked": False, "hyde": request.use_hyde, "sources": []}) + "\n"
+                return
+
+            # ── Reranking ─────────────────────────────────────────────────────────
+            if effective_reranker:
+                rerank_span = trace.span(
+                    name="reranking",
+                    input={
+                        "num_candidates": len(matches),
+                        "top_k": pipeline.top_k,
+                        "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+                    },
+                )
+                matches = pipeline.rerank(query=request.question, matches=matches, top_k=pipeline.top_k)
+                rerank_span.end(output={
+                    "num_kept": len(matches),
+                    "scores": [round(m.get("score", 0), 4) for m in matches],
+                })
+
+            # ── LLM streaming generation ──────────────────────────────────────────
+            context_chunks = [
+                m["metadata"]["text"] for m in matches if m.get("metadata", {}).get("text")
+            ]
+            generation_span = trace.generation(
+                name="llm-generation",
+                model=pipeline.llm.model_name,
+                input={
+                    "question": request.question,
+                    "context_chunks_count": len(context_chunks),
+                    "temperature": request.temperature,
+                },
+            )
+
+            token_stream = pipeline.generate_answer(
+                query=request.question,
+                context_matches=matches,
+                temperature=request.temperature,
+                stream=True,
+            )
+
+            full_answer = ""
+            for token in token_stream:
+                full_answer += token
+                yield json.dumps({"t": token}) + "\n"
+
+            stream_usage = getattr(pipeline.llm, "last_stream_usage", None)
+            generation_span.end(output={"answer": full_answer[:500]}, usage=stream_usage)
+
             latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
-            trace.update(output={"answer": greeting_reply, "type": "greeting"})
-            trace.score(name="latency_ms", value=latency_ms)
-            trace.score(name="sources_hit", value=0.0, comment="Greeting bypass — no retrieval")
+            _latency_store.append(latency_ms)
+
+            # ── Sources ───────────────────────────────────────────────────────────
+            sources = []
+            if request.return_sources:
+                sources = [
+                    {
+                        "text": m["metadata"].get("text", "")[:200] + "...",
+                        "source": m["metadata"].get("source", "unknown"),
+                        "chunk_index": m["metadata"].get("chunk_index", -1),
+                        "score": round(m.get("score", 0), 4),
+                    }
+                    for m in matches
+                ]
+
+            # ── Langfuse: finalize trace with scores ──────────────────────────────
+            retrieval_scores = [round(m.get("score", 0), 4) for m in matches]
+            trace.update(output={
+                "answer": full_answer[:500],
+                "latency_ms": latency_ms,
+                "sources_count": len(matches),
+                "mode": _retrieval_mode(request.use_hyde, request.use_reranker),
+            })
+            trace.score(name="latency_ms", value=latency_ms, comment="End-to-end streaming latency in milliseconds")
+            trace.score(name="sources_retrieved", value=float(len(matches)), comment="Number of chunks retrieved after threshold")
+            trace.score(name="sources_hit", value=1.0, comment="Context was found and answer was generated")
+            if retrieval_scores:
+                trace.score(name="avg_retrieval_score", value=round(sum(retrieval_scores) / len(retrieval_scores), 4), comment="Average cosine similarity of retrieved chunks")
+            if request.use_hyde:
+                trace.score(name="hyde_used", value=1.0)
+            if effective_reranker:
+                trace.score(name="reranker_used", value=1.0)
+
+            # ── LLM-as-a-Judge: Groq-powered evaluation for live stream chat ──────
+            if is_enabled() and context_chunks and full_answer:
+                try:
+                    judge = LLMJudge(groq_client=pipeline.llm.client)
+                    judge.score_trace(
+                        trace=trace,
+                        question=request.question,
+                        context_chunks=context_chunks,
+                        answer=full_answer,
+                    )
+                except Exception as _judge_exc:
+                    logger.warning(f"LLM judge streaming scoring skipped: {_judge_exc}")
+
             flush_langfuse()
+
             yield json.dumps({
                 "done": True,
                 "latency_ms": latency_ms,
+                "reranked": request.use_reranker,
+                "hyde": request.use_hyde,
+                "sources": sources,
+            }) + "\n"
+        except Exception as exc:
+            logger.error(f"Error in chat_stream: {exc}", exc_info=True)
+            yield json.dumps({
+                "t": f"I apologize, but I encountered an issue processing your query: {str(exc)}. Please try again."
+            }) + "\n"
+            yield json.dumps({
+                "done": True,
+                "latency_ms": 0,
                 "reranked": False,
                 "hyde": False,
                 "sources": [],
             }) + "\n"
-            return
-
-        # ── HyDE generation ───────────────────────────────────────────────────
-        hyde_doc = None
-        if request.use_hyde:
-            hyde_span = trace.generation(
-                name="hyde-generation",
-                model=pipeline.llm.model_name,
-                input={"query": request.question},
-                metadata={"purpose": "Generate hypothetical document for embedding"},
-            )
-            hyde_doc = pipeline._generate_hyde_document(request.question)
-            hyde_span.end(output={"hyde_doc": hyde_doc[:300]})
-
-        retrieval_query = hyde_doc if hyde_doc else request.question
-        effective_reranker = request.use_reranker and not request.use_hyde
-
-        # ── Retrieval ─────────────────────────────────────────────────────────
-        candidate_top_k = pipeline.top_k * 2 if effective_reranker else None
-        retrieval_span = trace.span(
-            name="retrieval",
-            input={
-                "query": retrieval_query[:300],
-                "namespace": request.namespace,
-                "top_k": candidate_top_k or pipeline.top_k,
-                "score_threshold": pipeline.hit_threshold,
-            },
-        )
-        matches = pipeline.retrieve(
-            query=retrieval_query,
-            namespace=request.namespace,
-            top_k_override=candidate_top_k,
-            score_threshold=pipeline.hit_threshold,
-        )
-        retrieval_span.end(output={
-            "num_matches": len(matches),
-            "scores": [round(m.get("score", 0), 4) for m in matches[:10]],
-            "sources": [m["metadata"].get("source", "?") for m in matches[:5]],
-        })
-
-        if not matches:
-            no_ctx_msg = "I couldn't find relevant context in the indexed documents to answer your question."
-            yield json.dumps({"t": no_ctx_msg}) + "\n"
-            latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
-            trace.update(output={"answer": no_ctx_msg, "type": "no_context"})
-            trace.score(name="latency_ms", value=latency_ms)
-            trace.score(name="sources_hit", value=0.0, comment="No chunks passed threshold")
-            flush_langfuse()
-            yield json.dumps({"done": True, "latency_ms": latency_ms, "reranked": False, "hyde": request.use_hyde, "sources": []}) + "\n"
-            return
-
-        # ── Reranking ─────────────────────────────────────────────────────────
-        if effective_reranker:
-            rerank_span = trace.span(
-                name="reranking",
-                input={
-                    "num_candidates": len(matches),
-                    "top_k": pipeline.top_k,
-                    "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
-                },
-            )
-            matches = pipeline.rerank(query=request.question, matches=matches, top_k=pipeline.top_k)
-            rerank_span.end(output={
-                "num_kept": len(matches),
-                "scores": [round(m.get("score", 0), 4) for m in matches],
-            })
-
-        # ── LLM streaming generation ──────────────────────────────────────────
-        context_chunks = [
-            m["metadata"]["text"] for m in matches if m.get("metadata", {}).get("text")
-        ]
-        generation_span = trace.generation(
-            name="llm-generation",
-            model=pipeline.llm.model_name,
-            input={
-                "question": request.question,
-                "context_chunks_count": len(context_chunks),
-                "temperature": request.temperature,
-            },
-        )
-
-        token_stream = pipeline.generate_answer(
-            query=request.question,
-            context_matches=matches,
-            temperature=request.temperature,
-            stream=True,
-        )
-
-        full_answer = ""
-        for token in token_stream:
-            full_answer += token
-            yield json.dumps({"t": token}) + "\n"
-
-        stream_usage = getattr(pipeline.llm, "last_stream_usage", None)
-        generation_span.end(output={"answer": full_answer[:500]}, usage=stream_usage)
-
-        latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
-        _latency_store.append(latency_ms)
-
-        # ── Sources ───────────────────────────────────────────────────────────
-        sources = []
-        if request.return_sources:
-            sources = [
-                {
-                    "text": m["metadata"].get("text", "")[:200] + "...",
-                    "source": m["metadata"].get("source", "unknown"),
-                    "chunk_index": m["metadata"].get("chunk_index", -1),
-                    "score": round(m.get("score", 0), 4),
-                }
-                for m in matches
-            ]
-
-        # ── Langfuse: finalize trace with scores ──────────────────────────────
-        retrieval_scores = [round(m.get("score", 0), 4) for m in matches]
-        trace.update(output={
-            "answer": full_answer[:500],
-            "latency_ms": latency_ms,
-            "sources_count": len(matches),
-            "mode": _retrieval_mode(request.use_hyde, request.use_reranker),
-        })
-        trace.score(name="latency_ms", value=latency_ms, comment="End-to-end streaming latency in milliseconds")
-        trace.score(name="sources_retrieved", value=float(len(matches)), comment="Number of chunks retrieved after threshold")
-        trace.score(name="sources_hit", value=1.0, comment="Context was found and answer was generated")
-        if retrieval_scores:
-            trace.score(name="avg_retrieval_score", value=round(sum(retrieval_scores) / len(retrieval_scores), 4), comment="Average cosine similarity of retrieved chunks")
-        if request.use_hyde:
-            trace.score(name="hyde_used", value=1.0)
-        if effective_reranker:
-            trace.score(name="reranker_used", value=1.0)
-
-        # ── LLM-as-a-Judge: Groq-powered evaluation for live stream chat ──────
-        if is_enabled() and context_chunks and full_answer:
-            try:
-                judge = LLMJudge(groq_client=pipeline.llm.client)
-                judge.score_trace(
-                    trace=trace,
-                    question=request.question,
-                    context_chunks=context_chunks,
-                    answer=full_answer,
-                )
-            except Exception as _judge_exc:
-                logger.warning(f"LLM judge streaming scoring skipped: {_judge_exc}")
-
-        flush_langfuse()
-
-        yield json.dumps({
-            "done": True,
-            "latency_ms": latency_ms,
-            "reranked": request.use_reranker,
-            "hyde": request.use_hyde,
-            "sources": sources,
-        }) + "\n"
 
     return StreamingResponse(_generate(), media_type="application/x-ndjson")
 
@@ -680,11 +692,12 @@ def agent_stream(request: AgentRequest):
 
     Event types:
       {"event":"start","session_id":"..."}
+      {"event":"classified","complexity":"simple|complex","namespace":"...","rewritten_query":"..."}
       {"event":"thought","text":"..."}
       {"event":"tool_start","tool":"...","args":{...}}
       {"event":"tool_result","tool":"...","result":{...}}
       {"event":"token","t":"..."}
-      {"event":"done","latency_ms":N,"tool_calls_made":N,"budget":{...}}
+      {"event":"done","latency_ms":N,"tool_calls_made":N,"budget":{...},"complexity":"..."}
       {"event":"budget_hit","reason":"...","partial_answer":"..."}
       {"event":"error","detail":"..."}
     """
@@ -693,6 +706,8 @@ def agent_stream(request: AgentRequest):
         raise HTTPException(status_code=400, detail="Question must not be empty.")
 
     from agent.react_agent import stream_agent
+    import uuid
+    trace_id = str(uuid.uuid4())
 
     def _generate():
         for line in stream_agent(
@@ -705,6 +720,7 @@ def agent_stream(request: AgentRequest):
             budget_config=request.budget_config,
             session_store=app_state.session_store,
             long_term=app_state.long_term_memory,
+            langfuse_trace_id=trace_id,
         ):
             yield line + "\n"
 
