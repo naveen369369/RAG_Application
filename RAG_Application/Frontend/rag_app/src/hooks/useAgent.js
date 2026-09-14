@@ -49,7 +49,10 @@ function applyAgentEvent(state, event) {
               ? { ...tc, result: event.result, status: 'done' }
               : tc
           )
-          return { ...m, toolCalls }
+          const sources = (event.tool === 'rag_retrieval' && event.result?.chunks)
+            ? event.result.chunks
+            : (m.sources || [])
+          return { ...m, toolCalls, sources }
         }),
       }
     case 'token':

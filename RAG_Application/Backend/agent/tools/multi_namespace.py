@@ -35,8 +35,9 @@ def make_multi_namespace_tool(pipeline: "RAGPipeline"):
                     top_k_override=top_k_per_namespace,
                     score_threshold=0.0,
                 )
+                from agent.tools.output_guardrails import sanitise_tool_output
                 per_namespace[ns] = [
-                    {"text": m["metadata"].get("text", ""), "score": round(m["score"], 4)}
+                    {"text": sanitise_tool_output(m["metadata"].get("text", "")), "score": round(m["score"], 4)}
                     for m in matches
                 ]
             except Exception:

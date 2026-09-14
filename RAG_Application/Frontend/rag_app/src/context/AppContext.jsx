@@ -21,6 +21,8 @@ export function AppProvider({ children }) {
   const [raceDrawerOpen, setRaceDrawerOpen] = useState(false)
   const [evalDrawerOpen, setEvalDrawerOpen] = useState(false)
   const [docStudioOpen, setDocStudioOpen] = useState(false)
+  const [trajDrawerOpen, setTrajDrawerOpen] = useState(false)
+  const [secDrawerOpen, setSecDrawerOpen] = useState(false)
 
   return (
     <AppContext.Provider value={{
@@ -33,6 +35,8 @@ export function AppProvider({ children }) {
       raceDrawerOpen, setRaceDrawerOpen,
       evalDrawerOpen, setEvalDrawerOpen,
       docStudioOpen, setDocStudioOpen,
+      trajDrawerOpen, setTrajDrawerOpen,
+      secDrawerOpen, setSecDrawerOpen,
     }}>
       {children}
     </AppContext.Provider>

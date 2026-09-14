@@ -353,17 +353,25 @@ def chat_stream(request: ChatRequest):
     def _generate() -> Generator[str, None, None]:
         _t0 = time.perf_counter()
         try:
-            # ── Greeting bypass ───────────────────────────────────────────────────
-            greeting_reply = pipeline._is_greeting(request.question)
-            if greeting_reply:
-                words = greeting_reply.split(" ")
+            # ── Intent guard (Greetings, Math, Off-Topic, Injections) ─────────────
+            from agent.tools.intent_guard import classify_intent
+            is_off, intent, guard_reply = classify_intent(request.question, use_llm_fallback=False)
+            if not is_off:
+                legacy_greeting = pipeline._is_greeting(request.question)
+                if legacy_greeting:
+                    is_off = True
+                    intent = "greeting"
+                    guard_reply = legacy_greeting
+
+            if is_off:
+                words = guard_reply.split(" ")
                 for i, word in enumerate(words):
                     yield json.dumps({"t": word + (" " if i < len(words) - 1 else "")}) + "\n"
-                    time.sleep(0.02)
+                    time.sleep(0.01)
                 latency_ms = round((time.perf_counter() - _t0) * 1000, 1)
-                trace.update(output={"answer": greeting_reply, "type": "greeting"})
+                trace.update(output={"answer": guard_reply, "type": intent})
                 trace.score(name="latency_ms", value=latency_ms)
-                trace.score(name="sources_hit", value=0.0, comment="Greeting bypass — no retrieval")
+                trace.score(name="sources_hit", value=0.0, comment=f"{intent} bypass — no retrieval")
                 flush_langfuse()
                 yield json.dumps({
                     "done": True,
@@ -792,3 +800,44 @@ def run_race_endpoint():
             yield json.dumps(evt) + "\n"
 
     return StreamingResponse(_generate(), media_type="application/x-ndjson")
+
+
+# ---------------------------------------------------------------------------
+# Trajectory Evaluation endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/agent/trajectory-eval", tags=["Agent Eval"])
+def run_trajectory_eval():
+    """
+    Run the 10-ticket trajectory evaluation (deterministic mock data, no LLM calls).
+
+    Returns full evaluation report:
+      - Per-case trajectory & outcome pass/fail
+      - Failure mode counts (before / after mitigation)
+      - Mean, P50, P99 cost per task
+      - Outcome-vs-trajectory gap
+      - Right-answer / wrong-path trace
+      - Regression table
+    """
+    from eval.trajectory_eval import run_eval
+    return run_eval()
+
+
+# ---------------------------------------------------------------------------
+# Security Tests endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/agent/security-eval", tags=["Agent Eval"])
+def run_security_eval():
+    """
+    Run the agent security test suite (deterministic, no LLM calls).
+
+    Returns:
+      - 5 security test results (before / after defenses)
+      - Indirect injection deep-dive (S02)
+      - Tool sandboxing results
+      - Output guardrail validation
+      - OWASP LLM Top 10 mapping table
+    """
+    from eval.security_tests import run_security_tests
+    return run_security_tests()

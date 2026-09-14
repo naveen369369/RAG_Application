@@ -43,9 +43,10 @@ def make_rag_retrieval_tool(pipeline: "RAGPipeline"):
                 score_threshold=pipeline.hit_threshold,
             )
 
+        from agent.tools.output_guardrails import sanitise_tool_output
         chunks = [
             {
-                "text":        m["metadata"].get("text", ""),
+                "text":        sanitise_tool_output(m["metadata"].get("text", "")),
                 "source":      m["metadata"].get("source", ""),
                 "score":       round(m.get("score", 0), 4),
                 "dense_score": round(m.get("dense_score", m.get("score", 0)), 4),

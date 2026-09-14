@@ -39,20 +39,46 @@ _GREETING_PATTERNS = re.compile(
 
 _OFF_TOPIC_PATTERNS = re.compile(
     r"\b("
-    r"write\s+(me\s+)?(a\s+)?(code|program|script|poem|essay|story|joke)|"
-    r"who\s+is\s+the\s+president|"
-    r"what\s+is\s+the\s+capital\s+of|"
-    r"weather\s+(in|today|forecast)|"
-    r"stock\s+price|"
-    r"latest\s+news|"
-    r"solve\s+(this\s+)?equation|"
-    r"calculate\s+\d|"
-    r"translate\s+.{1,40}\s+to\s+\w+|"
-    r"recipe\s+for|"
-    r"sports\s+score|"
-    r"movie\s+review|"
-    r"who\s+won\s+the"
+    r"(write|create|generate|debug)\s+.*?\b(code|program|script|function|class|algorithm|poem|essay|story|joke|riddle)|"
+    r"python|javascript|typescript|c\+\+|java\s+code|sql\s+query|html|css|"
+    r"tell\s+me\s+a\s+(joke|story|poem|riddle)|sing\s+(a\s+)?song|"
+    r"who\s+is\s+the\s+president|what\s+is\s+the\s+capital|weather\s+(in|today|forecast)|"
+    r"stock\s+price|latest\s+news|recipe\s+for|sports\s+score|movie\s+review|who\s+won\s+the|"
+    r"translate\s+.{1,40}\s+to\s+\w+"
     r")\b",
+    re.IGNORECASE,
+)
+
+# Math & arithmetic patterns (strictly avoid answering math questions like 2+2)
+_MATH_PATTERNS = re.compile(
+    r"("
+    r"^\s*[\(\d\.]+\s*[\+\*\/\^%xX÷×]\s*[\(\d\.]+[\s\d\.\+\-\*\/\^%xX÷×\(\)\=\?]*$|"
+    r"^\s*[\(\d\.]+\s+-\s+[\(\d\.]+[\s\d\.\+\-\*\/\^%xX÷×\(\)\=\?]*$|"
+    r"^\s*\d+\s*-\s*\d+\s*[\=\?]?\s*$|"
+    r"\b(what(\x27?s|\s+is|\s+equals?)\s+)?\d+\s*[\+\*\/\^%÷×]\s*\d+|"
+    r"\b(what(\x27?s|\s+is|\s+equals?)\s+)?\d+\s+-\s+\d+|"
+    r"\b(math|maths|algebra|calculus|geometry|trigonometry|arithmetic|square\s+root|factorial|fibonacci)\b|"
+    r"\b(calculate|compute|solve|evaluate)\s+(\d+|the\s+equation|this\s+math)"
+    r")",
+    re.IGNORECASE,
+)
+
+# Tier-1b: Prompt injection detection (zero-cost, instant)
+_INJECTION_PATTERNS = re.compile(
+    r"("
+    r"ignore\s+(all\s+)?previous\s+instructions|"
+    r"disregard\s+(the\s+)?system\s+prompt|"
+    r"forget\s+(your\s+)?instructions|"
+    r"you\s+are\s+now\s+a?\s*\w+\s*(bot|assistant|ai)|"
+    r"act\s+as\s+(if|a|an)\s+\w|"
+    r"pretend\s+(you\s+are|to\s+be)|"
+    r"override\s+(system|prompt|instruction)|"
+    r"jailbreak|"
+    r"DAN\s+mode|"
+    r"developer\s+mode\s+enabled|"
+    r"reveal\s+(your\s+)?(system\s+)?prompt|"
+    r"print\s+(the\s+)?(system\s+)?prompt"
+    r")",
     re.IGNORECASE,
 )
 
@@ -66,10 +92,23 @@ _GREETING_REPLY = (
     "billing, and account support. What can I help you with today?"
 )
 
+_MATH_REPLY = (
+    "I am a customer support assistant for our products and policies. "
+    "I cannot perform math calculations or solve arithmetic problems. "
+    "If you have questions about your order, shipping, returns, or billing, I would be happy to help!"
+)
+
 _OFF_TOPIC_REPLY = (
-    "I'm sorry, I can only help with questions related to our products, "
-    "policies, shipping, billing, and account support. "
+    "I'm sorry, but I can only answer questions related to our products, "
+    "policies, shipping, returns, billing, and account support. "
+    "I cannot assist with general knowledge, coding, or unrelated topics. "
     "Is there something specific about your order or account I can assist you with?"
+)
+
+_INJECTION_REPLY = (
+    "I'm sorry, I cannot follow instructions that override my support role. "
+    "I'm here to help with product, shipping, billing, and account questions. "
+    "How can I assist you today?"
 )
 
 
@@ -126,7 +165,7 @@ def classify_intent(question: str, use_llm_fallback: bool = True) -> Tuple[bool,
         (is_off_topic, intent, reply)
         - is_off_topic: True  → short-circuit the pipeline with `reply`
                         False → proceed with normal RAG pipeline
-        - intent: "greeting" | "off_topic" | "support"
+        - intent: "greeting" | "off_topic" | "injection" | "support"
         - reply:  pre-written response if off-topic, else ""
     """
     q = question.strip()
@@ -135,11 +174,19 @@ def classify_intent(question: str, use_llm_fallback: bool = True) -> Tuple[bool,
     if _GREETING_PATTERNS.match(q):
         return True, "greeting", _GREETING_REPLY
 
+    # Math & arithmetic check (e.g. 2+2, solve equation)
+    if _MATH_PATTERNS.search(q):
+        return True, "off_topic", _MATH_REPLY
+
     if _OFF_TOPIC_PATTERNS.search(q):
         return True, "off_topic", _OFF_TOPIC_REPLY
 
+    # Tier-1b: injection detection (security guard)
+    if _INJECTION_PATTERNS.search(q):
+        return True, "injection", _INJECTION_REPLY
+
     # Tier-2: LLM classifier for borderline cases
-    if use_llm_fallback and len(q) > 3:
+    if use_llm_fallback and len(q) >= 2:
         intent = _llm_classify(q)
         if intent == "greeting":
             return True, "greeting", _GREETING_REPLY

@@ -8,6 +8,21 @@ if TYPE_CHECKING:
     from rag.rag_pipeline import RAGPipeline
 
 
+ADMIN_SESSIONS: set = {"admin-session-001", "admin-001", "admin"}
+
+
+def is_allowed_tool(tool_name: str, session_id: str) -> tuple[bool, str]:
+    """
+    Enforce least-privilege tool sandboxing.
+    eval_trigger / run_evaluation is restricted to admin sessions only.
+    """
+    if tool_name in ("eval_trigger", "run_evaluation"):
+        if session_id in ADMIN_SESSIONS:
+            return True, "admin authorized"
+        return False, f"Permission denied: eval_trigger is restricted to admin sessions. Session '{session_id}' is not authorised."
+    return True, "ok"
+
+
 def make_eval_trigger_tool(pipeline: "RAGPipeline"):
     @tool
     def run_evaluation(
@@ -16,13 +31,19 @@ def make_eval_trigger_tool(pipeline: "RAGPipeline"):
         answer: Optional[str] = None,
         context: Optional[List[str]] = None,
         top_k: int = 3,
+        session_id: Optional[str] = None,
     ) -> dict:
         """
-        Run an evaluation on demand.
+        Run an evaluation on demand (admin restricted).
         eval_type='hit_rate': run golden Hit Rate @ K evaluation (no extra args needed).
         eval_type='llm_judge': score a specific answer (provide question, answer, context).
         Returns evaluation scores and metrics.
         """
+        sid = session_id or "user-session"
+        allowed, reason = is_allowed_tool("run_evaluation", sid)
+        if not allowed:
+            return {"error": reason, "status": "permission_denied"}
+
         eval_type = eval_type.strip().lower()
 
         if eval_type == "hit_rate":

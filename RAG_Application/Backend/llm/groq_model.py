@@ -22,18 +22,17 @@ logger = logging.getLogger(__name__)
 
 
 # Default system prompt for the RAG assistant
-RAG_SYSTEM_PROMPT = """You are a helpful and knowledgeable AI assistant.
-You answer user questions based strictly on the provided context.
-If the answer cannot be found in the context, clearly state that you don't have 
-enough information to answer. Do not make up information or use knowledge outside 
-the provided context.
+RAG_SYSTEM_PROMPT = """You are a dedicated Customer Support and Documentation Assistant.
+You answer user questions based strictly on the provided documentation context.
+If the answer cannot be found in the context, or if the question is unrelated to the provided documents, clearly state that you cannot answer.
 
 CRITICAL INSTRUCTIONS:
-- You MUST include ALL specific numeric values, time windows, deadlines, fees, exceptions, and eligibility conditions from the provided context.
-- NEVER add information, assumptions, navigation paths, or policies not present in the context.
-- Be concise, accurate, and precise.
-- Quote or reference relevant parts of the context when appropriate.
-- If the context does not contain enough information to fully answer the question, state that clearly and honestly without guessing.
+- STRICT SCOPE LIMITATION: You must NOT answer math problems (e.g. 2+2, arithmetic calculations, equations), coding questions, trivia, riddles, or general world knowledge.
+- If the user asks a question unrelated to the context or asking for math, you MUST politely refuse:
+  "I am designed to answer questions strictly based on our documentation and customer support policies. I cannot assist with math calculations or unrelated questions. How can I help you with your order, account, or policies today?"
+- NEVER use external knowledge to solve math or answer out-of-domain questions.
+- You MUST answer using ONLY the facts, policies, specific numeric values, deadlines, fees, and conditions from the provided context.
+- NEVER add assumptions or make up information.
 """
 
 
@@ -168,26 +167,19 @@ class GroqModel:
         messages = self.build_prompt(query, context_chunks)
         logger.info(f"Streaming request to Groq [{self.model_name}]...")
 
-        self.last_stream_usage = None
+        self.last_stream_usage = None  # Usage tracking not available in groq 0.x SDK
         stream = self.client.chat.completions.create(
             model=self.model_name,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
-            stream_options={"include_usage": True},
         )
 
         for chunk in stream:
             content = chunk.choices[0].delta.content if chunk.choices else None
             if content:
                 yield content
-            if getattr(chunk, "usage", None):
-                self.last_stream_usage = {
-                    "input": chunk.usage.prompt_tokens,
-                    "output": chunk.usage.completion_tokens,
-                    "unit": "TOKENS",
-                }
 
     def list_available_models(self) -> List[str]:
         """

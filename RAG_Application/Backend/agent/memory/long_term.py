@@ -26,35 +26,11 @@ class LongTermMemory:
         self._mem = self._build_mem0()
 
     def _build_mem0(self):
-        try:
-            from mem0 import Memory
-            config = {
-                "llm": {
-                    "provider": "groq",
-                    "config": {
-                        "model": os.getenv("GROQ_MODEL_NAME", "llama-3.3-70b-versatile").removeprefix("groq/"),
-                        "api_key": os.getenv("GROQ_API_KEY", ""),
-                    },
-                },
-                "vector_store": {
-                    "provider": "pinecone",
-                    "config": {
-                        "api_key": os.getenv("PINECONE_API_KEY", ""),
-                        "collection_name": os.getenv("PINECONE_INDEX_NAME", "rag-index"),
-                        "embedding_model_dims": 384,
-                    },
-                },
-                "embedder": {
-                    "provider": "huggingface",
-                    "config": {"model": "all-MiniLM-L6-v2"},
-                },
-            }
-            mem = Memory.from_config(config)
-            logger.info("LongTermMemory: mem0 initialised with Pinecone backend")
-            return mem
-        except Exception as exc:
-            logger.warning("LongTermMemory: mem0 unavailable (%s), running without it", exc)
-            return None
+        # mem0 disabled: free Pinecone plan does not support the region mem0
+        # tries to create its index in (us-west-2 / aws). Returning None so
+        # the agent runs normally without long-term fact storage.
+        logger.info("LongTermMemory: mem0 disabled (Pinecone free-plan region restriction)")
+        return None
 
     # ── mem0 Layer A ─────────────────────────────────────────────────────────
 

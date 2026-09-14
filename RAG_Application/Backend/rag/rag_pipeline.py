@@ -750,9 +750,10 @@ class RAGPipeline:
         Returns:
             str | Generator: Full answer string, or a generator if stream=True.
         """
-        # Extract text from retrieved matches
+        # Extract text from retrieved matches and sanitize against indirect injection
+        from agent.tools.output_guardrails import sanitise_tool_output
         context_chunks = [
-            match["metadata"]["text"]
+            sanitise_tool_output(match["metadata"]["text"])
             for match in context_matches
             if match.get("metadata", {}).get("text")
         ]
@@ -803,13 +804,19 @@ class RAGPipeline:
         """
         logger.info(f"\n{'='*60}\nQuestion: {question}\n{'='*60}")
 
-        # Check for conversational greeting bypass
-        greeting_reply = self._is_greeting(question)
-        if greeting_reply:
-            logger.info(f"Greeting detected: '{question}' -> direct response.")
+        # Check for conversational greeting or off-topic/math bypass
+        from agent.tools.intent_guard import classify_intent
+        is_off, intent, guard_reply = classify_intent(question, use_llm_fallback=False)
+        if not is_off:
+            legacy_greeting = self._is_greeting(question)
+            if legacy_greeting:
+                is_off = True
+                guard_reply = legacy_greeting
+        if is_off:
+            logger.info(f"Intent guard triggered ({intent}): '{question}' -> direct response.")
             return {
                 "question": question,
-                "answer": greeting_reply,
+                "answer": guard_reply,
                 "sources": [],
                 "scores": [],
                 "reranked": False,
@@ -852,6 +859,10 @@ class RAGPipeline:
             temperature=temperature,
             stream=stream,
         )
+
+        if isinstance(answer, str):
+            from agent.tools.output_guardrails import guard_output
+            answer = guard_output(answer)
 
         scores = [round(m.get("score", 0), 4) for m in matches]
 

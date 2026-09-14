@@ -54,6 +54,7 @@ REACT_SYSTEM_PROMPT_SIMPLE = """You are a customer support agent. Answer questio
 QUESTION TYPE: Simple (one-step retrieval is sufficient)
 
 RULES:
+- STRICT SCOPE: You are exclusively a customer support agent. If asked math calculations (e.g. 2+2, arithmetic, equations), coding, riddles, or unrelated general knowledge, immediately output Final Answer refusing to answer: "I am a customer support assistant and can only help with our products, orders, shipping, returns, billing, and account support. I cannot assist with math calculations or unrelated questions."
 - Call rag_retrieval ONCE to get relevant document chunks.
 - Give a direct Final Answer based only on what the tool returned.
 - If retrieved content has no relevant info, say: "Based on our documentation, I don't have specific information about that. Please contact support directly."
@@ -76,6 +77,7 @@ REACT_SYSTEM_PROMPT_COMPLEX = """You are a customer support agent. Answer questi
 QUESTION TYPE: Complex (may require customer context + policy lookup)
 
 RULES:
+- STRICT SCOPE: You are exclusively a customer support agent. If asked math calculations (e.g. 2+2, arithmetic, equations), coding, riddles, or unrelated general knowledge, immediately output Final Answer refusing to answer: "I am a customer support assistant and can only help with our products, orders, shipping, returns, billing, and account support. I cannot assist with math calculations or unrelated questions."
 - Step 1: If the question involves escalation, priority, or account-specific handling → call customer_lookup FIRST to get the customer's tier.
 - Step 2: Call rag_retrieval to find the relevant policy or procedure.
 - Step 3: Combine customer tier + policy to give a personalised Final Answer.
@@ -525,12 +527,15 @@ def stream_agent(
                                 _current_llm_gen = None
 
                             if "Final Answer:" in content_str:
-                                final_answer = content_str.split("Final Answer:", 1)[-1].strip()
+                                raw_answer = content_str.split("Final Answer:", 1)[-1].strip()
+                                from agent.tools.output_guardrails import guard_output
+                                final_answer = guard_output(raw_answer)
                                 yield _emit({"event": "thought", "text": content_str})
                                 for i, word in enumerate(final_answer.split(" ")):
                                     yield _emit({"event": "token", "t": word if i == 0 else " " + word})
                             elif not msg.tool_calls:
-                                final_answer = content_str
+                                from agent.tools.output_guardrails import guard_output
+                                final_answer = guard_output(content_str)
                                 if "Thought:" in content_str:
                                     yield _emit({"event": "thought", "text": content_str})
                                 for i, word in enumerate(final_answer.split(" ")):
@@ -622,11 +627,13 @@ def stream_agent(
                 "fallback": True,
             }
         except Exception as fb_exc:
-            final_answer = "I'm sorry, I encountered an error while retrieving information. Please contact our support team directly for assistance."
-            logger.error("Fallback also failed: %s", fb_exc)
+            logger.error("Fallback retrieval also failed: %s", fb_exc)
+            final_answer = "I'm sorry, I encountered an error while retrieving information. Please try again or contact support directly."
 
-        for i, word in enumerate(final_answer.split(" ")):
-            yield _emit({"event": "token", "t": word if i == 0 else " " + word})
+    from agent.tools.output_guardrails import guard_output
+    final_answer = guard_output(final_answer)
+    for i, word in enumerate(final_answer.split(" ")):
+        yield _emit({"event": "token", "t": word if i == 0 else " " + word})
 
     if budget_summary.get("abort"):
         budget_hit    = True

@@ -6,10 +6,27 @@ Returns customer profile data (tier, order count, account status) for a given cu
 In production, replace CUSTOMER_DB with a real CRM / database API call.
 The agent uses this to personalise answers and handle escalation logic
 (e.g., premium customers get priority escalation paths).
+
+MITIGATION — Argument Validation (2026-09-14)
+----------------------------------------------
+All customer_id values are validated before the CRM lookup:
+  1. Format check: must match ^C\d{3}$ (e.g. C001, C099).
+  2. Existence check: must be in CUSTOMER_DB.
+Fabricated / invented IDs (e.g. 'CUST-UNKNOWN', 'VIP-ESCALATE') are rejected
+with a structured error response that forces the agent to replan using the
+correct ID supplied in the user's message or context.
 """
 from __future__ import annotations
 
+import logging
+import re
+
 from langchain_core.tools import tool
+
+logger = logging.getLogger(__name__)
+
+# Compiled once — format: C followed by exactly 3 digits (C001 … C999)
+_VALID_CID_RE = re.compile(r"^C\d{3}$")
 
 # ---------------------------------------------------------------------------
 # Mock CRM data — replace with real DB/API call in production
@@ -89,18 +106,46 @@ def make_customer_lookup_tool():
         - The question mentions a specific order problem or account issue
         - You need to know if this is a premium/VIP customer for personalised response
         Returns: customer tier, active orders, account status, escalation policy.
+
+        IMPORTANT — customer_id format:
+          - Must be exactly 'C' followed by 3 digits, e.g. C001, C002, C005.
+          - Do NOT invent or guess IDs. Extract the real ID from the user's message.
+          - If the user did not provide an ID, ask them for it before calling this tool.
         """
         cid = customer_id.strip().upper()
-        profile = CUSTOMER_DB.get(cid)
 
-        if not profile:
+        # ── MITIGATION: Argument Validation ───────────────────────────────
+        # 1. Format check
+        if not _VALID_CID_RE.match(cid):
+            logger.warning(
+                "customer_lookup rejected fabricated ID: %r (format ^C\\d{3}$ required)", cid
+            )
             return {
                 "found": False,
+                "error": "INVALID_ID_FORMAT",
+                "customer_id": cid,
+                "message": (
+                    f"'{cid}' is not a valid customer ID format. "
+                    "Customer IDs must match the pattern C001–C999. "
+                    "Please extract the correct ID from the customer's message and retry."
+                ),
+                "tier": None,
+                "escalation": None,
+            }
+
+        # 2. Existence check
+        profile = CUSTOMER_DB.get(cid)
+        if not profile:
+            logger.info("customer_lookup: ID %s not in CRM — treating as basic tier.", cid)
+            return {
+                "found": False,
+                "error": "NOT_FOUND",
                 "customer_id": cid,
                 "message": "Customer not found in system. Treat as basic tier.",
                 "tier": "basic",
                 "escalation": ESCALATION_POLICY["basic"],
             }
+        # ─────────────────────────────────────────────────────────────────
 
         tier = profile.get("tier", "basic")
         return {

@@ -7,6 +7,8 @@ import { useAgent } from './hooks/useAgent'
 import RaceDrawer from './components/Race/RaceDrawer'
 import EvaluationDrawer from './components/Sidebar/EvaluationDrawer'
 import DocumentStudioModal from './components/Sidebar/DocumentStudioModal'
+import TrajectoryEvalDrawer from './components/AgentEval/TrajectoryEvalDrawer'
+import SecurityTestDrawer from './components/AgentEval/SecurityTestDrawer'
 
 const SIDEBAR_MIN = 220
 const SIDEBAR_MAX = 520
@@ -60,6 +62,8 @@ function RAGApp() {
       <RaceDrawer />
       <EvaluationDrawer />
       <DocumentStudioModal />
+      <TrajectoryEvalDrawer />
+      <SecurityTestDrawer />
       {/* Mobile overlay backdrop */}
       {sidebarOpen && (
         <div
