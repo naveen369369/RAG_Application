@@ -2,10 +2,10 @@ import { useState } from 'react'
 import {
   X, GitBranch, Play, Loader2, CheckCircle2, XCircle,
   AlertTriangle, ChevronDown, ChevronRight, TrendingUp, DollarSign,
-  Activity, Zap, BarChart3, ArrowRight
+  Activity, Zap, BarChart3, ArrowRight, Radio
 } from 'lucide-react'
 import { useAppContext } from '../../context/AppContext'
-import { runTrajectoryEval } from '../../api/agentEval'
+import { runTrajectoryEval, runLiveEvalAll } from '../../api/agentEval'
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const pct = v => `${(v * 100).toFixed(1)}%`
@@ -59,10 +59,14 @@ function SectionHeader({ icon, title, badge }) {
 export default function TrajectoryEvalDrawer() {
   const { trajDrawerOpen, setTrajDrawerOpen } = useAppContext()
   const [loading, setLoading] = useState(false)
+  const [liveLoading, setLiveLoading] = useState(false)
   const [data, setData] = useState(null)
+  const [liveData, setLiveData] = useState(null)
   const [error, setError] = useState(null)
+  const [liveError, setLiveError] = useState(null)
   const [activeTab, setActiveTab] = useState('overview')
   const [expandedCase, setExpandedCase] = useState(null)
+  const [expandedLiveCase, setExpandedLiveCase] = useState(null)
 
   const handleRun = async () => {
     setLoading(true); setError(null)
@@ -77,12 +81,26 @@ export default function TrajectoryEvalDrawer() {
     }
   }
 
+  const handleRunLive = async () => {
+    setLiveLoading(true); setLiveError(null)
+    try {
+      const res = await runLiveEvalAll()
+      setLiveData(res)
+      setActiveTab('live')
+    } catch (e) {
+      setLiveError(e.message)
+    } finally {
+      setLiveLoading(false)
+    }
+  }
+
   const tabs = [
     { id: 'overview', label: 'Overview' },
     { id: 'cases', label: '10 Cases' },
     { id: 'mitigation', label: 'Mitigation' },
     { id: 'regression', label: 'Regression' },
     { id: 'wrongpath', label: 'Wrong Path' },
+    ...(liveData ? [{ id: 'live', label: '🔴 Live Eval' }] : []),
   ]
 
   return (
@@ -109,14 +127,23 @@ export default function TrajectoryEvalDrawer() {
               <p className="text-xs text-white/70">10 ticket cases · failure modes · mitigation · regression</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <button
               onClick={handleRun}
-              disabled={loading}
+              disabled={loading || liveLoading}
               className="flex items-center gap-2 text-sm font-semibold bg-white text-violet-700 hover:bg-violet-50 rounded-xl px-4 py-2 transition-colors disabled:opacity-60 shadow-sm"
             >
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
-              {loading ? 'Running…' : 'Run Evaluation'}
+              {loading ? 'Running…' : 'Mock Eval'}
+            </button>
+            <button
+              onClick={handleRunLive}
+              disabled={loading || liveLoading}
+              className="flex items-center gap-2 text-sm font-semibold bg-rose-500 text-white hover:bg-rose-400 rounded-xl px-4 py-2 transition-colors disabled:opacity-60 shadow-sm"
+              title="Run all 10 cases against the real agent + SQL DB"
+            >
+              {liveLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Radio className="w-4 h-4" />}
+              {liveLoading ? 'Live Running…' : 'Live Eval All'}
             </button>
             <button onClick={() => setTrajDrawerOpen(false)} className="p-2 hover:bg-white/20 rounded-xl transition-colors">
               <X className="w-5 h-5 text-white" />
@@ -484,6 +511,161 @@ export default function TrajectoryEvalDrawer() {
               )}
             </div>
           )}
+
+          {/* ── LIVE EVAL TAB ──────────────────────────────────────────────── */}
+          {activeTab === 'live' && (() => {
+            if (liveLoading) return (
+              <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-500">
+                <Loader2 className="w-8 h-8 animate-spin text-rose-500" />
+                <p className="text-sm font-medium">Running all 10 cases against live agent + DB…</p>
+                <p className="text-xs text-slate-400">This may take 1–3 minutes (real LLM calls)</p>
+              </div>
+            )
+            if (liveError) return (
+              <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 text-sm text-rose-700">
+                <strong>Live Eval Error:</strong> {liveError}
+              </div>
+            )
+            if (!liveData) return null
+
+            const agg = liveData.aggregate
+            return (
+              <div className="space-y-6">
+                {/* Header banner */}
+                <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex items-center gap-3">
+                  <Radio className="w-5 h-5 text-rose-500 flex-shrink-0" />
+                  <div>
+                    <p className="text-sm font-bold text-rose-800">Live Evaluation — Real Agent + SQL DB</p>
+                    <p className="text-xs text-rose-600">{liveData.total_cases} cases · {liveData.eval_runtime_ms.toLocaleString()} ms total · actual tool calls, no mocks</p>
+                  </div>
+                </div>
+
+                {/* Aggregate metrics */}
+                <div className="grid grid-cols-3 gap-3">
+                  <MetricCard label="Overall Pass" value={pct(agg.overall_pass_rate)} color={agg.overall_pass_rate >= 0.7 ? 'emerald' : 'rose'} />
+                  <MetricCard label="Trajectory Pass" value={pct(agg.trajectory_pass_rate)} color={agg.trajectory_pass_rate >= 0.7 ? 'emerald' : 'amber'} />
+                  <MetricCard label="Outcome Pass" value={pct(agg.outcome_pass_rate)} color={agg.outcome_pass_rate >= 0.7 ? 'emerald' : 'rose'} />
+                  <MetricCard label="Tool-Choice Accuracy" value={pct(agg.tool_choice_accuracy)} color="blue" />
+                  <MetricCard label="Arg Validity" value={pct(agg.arg_validity_rate)} color={agg.arg_validity_rate >= 0.8 ? 'emerald' : 'rose'} />
+                  <MetricCard label="Mean Latency" value={`${agg.mean_latency_ms.toFixed(0)} ms`} color="violet" />
+                </div>
+
+                {/* Per-case results */}
+                <div className="space-y-2">
+                  <SectionHeader icon={<Activity className="w-3.5 h-3.5" />} title="Per-Case Live Results" badge={`${liveData.total_cases} cases`} />
+                  {liveData.cases.map(c => (
+                    <div key={c.case_id} className="border border-slate-200 rounded-xl overflow-hidden">
+                      <button
+                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-left"
+                        onClick={() => setExpandedLiveCase(expandedLiveCase === c.case_id ? null : c.case_id)}
+                      >
+                        <span className="text-xs font-mono font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded flex-shrink-0">{c.case_id}</span>
+                        <span className="text-sm text-slate-700 flex-1 truncate">{c.question?.slice(0, 75)}…</span>
+                        <div className="flex gap-1 flex-shrink-0">
+                          <Pill ok={c.trajectory_pass}>Traj</Pill>
+                          <Pill ok={c.outcome_pass}>Out</Pill>
+                          <Pill ok={c.args_valid}>Args</Pill>
+                        </div>
+                        {expandedLiveCase === c.case_id
+                          ? <ChevronDown className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                          : <ChevronRight className="w-4 h-4 text-slate-400 flex-shrink-0" />}
+                      </button>
+
+                      {expandedLiveCase === c.case_id && (
+                        <div className="border-t border-slate-100 p-4 bg-slate-50 space-y-3">
+                          {/* Question */}
+                          <p className="text-xs text-slate-600">{c.question}</p>
+
+                          {/* Tool sequences */}
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="bg-white border border-slate-200 rounded-lg p-3">
+                              <p className="text-xs font-semibold text-slate-400 mb-2">Expected Tools</p>
+                              <div className="flex flex-wrap gap-1">
+                                {(c.expected_tools || []).map((t, i) => (
+                                  <span key={i} className="bg-violet-100 text-violet-700 text-xs font-mono px-2 py-0.5 rounded">{t}</span>
+                                ))}
+                              </div>
+                            </div>
+                            <div className="bg-white border border-slate-200 rounded-lg p-3">
+                              <p className="text-xs font-semibold text-slate-400 mb-2">Actual Tools Called</p>
+                              <div className="flex flex-wrap gap-1">
+                                {(c.tools_called || []).length > 0
+                                  ? c.tools_called.map((t, i) => (
+                                    <span key={i} className="bg-emerald-100 text-emerald-700 text-xs font-mono px-2 py-0.5 rounded">{t}</span>
+                                  ))
+                                  : <span className="text-xs text-slate-400 italic">none</span>
+                                }
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Metrics row */}
+                          <div className="grid grid-cols-4 gap-2">
+                            <div className="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                              <p className="text-xs text-slate-400">Latency</p>
+                              <p className="text-sm font-bold text-slate-700">{c.latency_ms?.toFixed(0)} ms</p>
+                            </div>
+                            <div className="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                              <p className="text-xs text-slate-400">Steps</p>
+                              <p className="text-sm font-bold text-slate-700">{c.step_count}</p>
+                            </div>
+                            <div className="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                              <p className="text-xs text-slate-400">Complexity</p>
+                              <p className="text-sm font-bold text-slate-700 capitalize">{c.complexity || '—'}</p>
+                            </div>
+                            <div className="bg-white border border-slate-200 rounded-lg p-2 text-center">
+                              <p className="text-xs text-slate-400">Verdict</p>
+                              <p className={`text-xs font-bold ${c.passed ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {c.passed ? '✓ PASS' : '✗ FAIL'}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Diagnostics */}
+                          {c.diagnostics?.length > 0 && (
+                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                              <p className="text-xs font-semibold text-blue-500 mb-1">Diagnostics</p>
+                              <ul className="space-y-1">
+                                {c.diagnostics.map((d, i) => (
+                                  <li key={i} className="text-xs text-blue-700">• {d}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Answer preview */}
+                          {c.final_answer && (
+                            <div className="bg-white border border-slate-200 rounded-lg p-3">
+                              <p className="text-xs font-semibold text-slate-400 mb-1">Agent Answer Preview</p>
+                              <p className="text-xs text-slate-700 line-clamp-4">{c.final_answer.slice(0, 350)}{c.final_answer.length > 350 ? '…' : ''}</p>
+                            </div>
+                          )}
+
+                          {/* Error */}
+                          {c.error && (
+                            <div className="bg-rose-50 border border-rose-200 rounded-lg p-3">
+                              <p className="text-xs font-semibold text-rose-500 mb-1">Error</p>
+                              <p className="text-xs text-rose-700">{c.error}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Errors summary */}
+                {liveData.errors?.length > 0 && (
+                  <div className="bg-rose-50 border border-rose-200 rounded-xl p-4">
+                    <p className="text-sm font-bold text-rose-700 mb-2">{liveData.errors.length} case(s) errored</p>
+                    {liveData.errors.map((e, i) => (
+                      <p key={i} className="text-xs text-rose-600">• {e.case_id}: {e.error}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )
+          })()}
         </div>
       </div>
     </>

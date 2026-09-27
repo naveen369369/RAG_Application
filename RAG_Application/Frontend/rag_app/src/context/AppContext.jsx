@@ -23,6 +23,8 @@ export function AppProvider({ children }) {
   const [docStudioOpen, setDocStudioOpen] = useState(false)
   const [trajDrawerOpen, setTrajDrawerOpen] = useState(false)
   const [secDrawerOpen, setSecDrawerOpen] = useState(false)
+  const [ticketsDrawerOpen, setTicketsDrawerOpen] = useState(false)
+  const [ticketsDrawerTab, setTicketsDrawerTab] = useState('tickets')
 
   return (
     <AppContext.Provider value={{
@@ -37,6 +39,8 @@ export function AppProvider({ children }) {
       docStudioOpen, setDocStudioOpen,
       trajDrawerOpen, setTrajDrawerOpen,
       secDrawerOpen, setSecDrawerOpen,
+      ticketsDrawerOpen, setTicketsDrawerOpen,
+      ticketsDrawerTab, setTicketsDrawerTab,
     }}>
       {children}
     </AppContext.Provider>

@@ -1,0 +1,53 @@
+# MCP DUAL-SERVER CONFIGURATION DIFF
+# File: Backend/mcp/mcp_config.py
+# Differentiating Server 1 (CRM/RAG - 9 Tools) and Server 2 (Escalation - 2 Tools)
+
++ MCP_SERVERS = [
++     # ──────────────────────────────────────────────────────────────────────────
++     # MCP SERVER 1: CRM & Agent Operations (Built-in / Local In-Process)
++     # ──────────────────────────────────────────────────────────────────────────
++     {
++         "server_id":   "crm-agent-server-v1",
++         "name":        "CustomerDataServer",
++         "description": "Core CRM lookups, RAG vector retrieval, and routing tools",
++         "transport":   "in_process",
++         "host":        "local",
++         "auth": {
++             "type":  "internal",
++             "token": None,
++         },
++         "tools": [
++             "ticket_lookup",
++             "order_lookup",
++             "customer_lookup",
++             "rag_retrieval",
++             "route_namespace",
++             "doc_summarizer",
++             "multi_namespace",
++             "doc_metadata",
++             "eval_trigger",
++         ],
++         "tool_count":  9,
++         "enabled":     True,
++     },
++     # ──────────────────────────────────────────────────────────────────────────
++     # MCP SERVER 2: Ticket Escalation Audit Trail (External HTTP / FastMCP SSE)
++     # ──────────────────────────────────────────────────────────────────────────
++     {
++         "server_id":   "ticket-history-v2",
++         "name":        "TicketHistoryServer",
++         "description": "Historical escalation audit logs and lifecycle event tracking",
++         "transport":   os.environ.get("MCP_TRANSPORT", "http"),
++         "url":         os.environ.get("MCP_SERVER2_URL", "http://127.0.0.1:8100/mcp"),
++         "auth": {
++             "type":  "bearer",
++             "token": os.environ.get("MCP_API_KEY", ""),  # Protected secret
++         },
++         "tools": [
++             "get_ticket",
++             "get_escalation_history",
++         ],
++         "tool_count":  2,
++         "enabled":     True,
++     },
++ ]

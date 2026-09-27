@@ -9,6 +9,7 @@ import EvaluationDrawer from './components/Sidebar/EvaluationDrawer'
 import DocumentStudioModal from './components/Sidebar/DocumentStudioModal'
 import TrajectoryEvalDrawer from './components/AgentEval/TrajectoryEvalDrawer'
 import SecurityTestDrawer from './components/AgentEval/SecurityTestDrawer'
+import TicketsDrawer from './components/Tickets/TicketsDrawer'
 
 const SIDEBAR_MIN = 220
 const SIDEBAR_MAX = 520
@@ -49,6 +50,17 @@ function RAGApp() {
     }
   }, [agentMode, namespace, showSources, useHyde, useReranker, sessionId, sendAgent, sendChat])
 
+  const handleAskAboutTicket = useCallback((prompt, cid) => {
+    sendAgent({
+      question: prompt,
+      customer_id: cid || 'C001',
+      session_id: sessionId,
+      temperature: 0.2,
+      return_sources: showSources,
+      namespace,
+    })
+  }, [sendAgent, sessionId, showSources, namespace])
+
   const handleNewChat = useCallback(() => {
     if (agentMode) clearAgent()
     else clearChat()
@@ -59,6 +71,7 @@ function RAGApp() {
   return (
     <div className="flex h-screen overflow-hidden bg-white">
       {/* Overlays rendered outside sidebar so they cover the full viewport */}
+      <TicketsDrawer onAskAboutTicket={handleAskAboutTicket} />
       <RaceDrawer />
       <EvaluationDrawer />
       <DocumentStudioModal />

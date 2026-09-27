@@ -26,79 +26,84 @@ RESULTS_DIR.mkdir(exist_ok=True)
 # ── 10-Ticket Dataset ──────────────────────────────────────────────────────────
 
 TICKETS = [
-    # Simple retrieval — workflow optimal
+    # T01: Ticket TCK-1001 (customer C001, order ORD-1001, opened item)
     {
         "id": "T01", "customer_id": "C001",
-        "question": "What are your shipping timeframes?",
-        "item_status": "unopened",
-        "expected_tools": ["route_namespace", "rag_retrieval"],
+        "question": "Can you check ticket TCK-1001? Can I return my opened headphones from order ORD-1001?",
+        "item_status": "opened",
+        "expected_tools": ["ticket_lookup", "rag_retrieval"],
         "escalation_expected": False,
     },
+    # T02: Ticket TCK-1002 (customer C002, order ORD-1002, shipped package)
     {
         "id": "T02", "customer_id": "C002",
-        "question": "How do I reset my account password?",
+        "question": "Look up ticket TCK-1002. Can I redirect delivery address for order ORD-1002 while shipped?",
         "item_status": "unopened",
-        "expected_tools": ["route_namespace", "rag_retrieval"],
+        "expected_tools": ["ticket_lookup", "order_lookup", "rag_retrieval"],
         "escalation_expected": False,
     },
+    # T03: Ticket TCK-1003 (customer C003, order ORD-1003, damaged item)
     {
         "id": "T03", "customer_id": "C003",
-        "question": "What documents can I upload to the system?",
+        "question": "Check ticket TCK-1003. My smart water bottle arrived damaged, what are my replacement options?",
+        "item_status": "damaged",
+        "expected_tools": ["ticket_lookup", "rag_retrieval"],
+        "escalation_expected": True,
+    },
+    # T04: Ticket TCK-1004 (customer C004, suspended account)
+    {
+        "id": "T04", "customer_id": "C004",
+        "question": "Regarding ticket TCK-1004: My account shows suspended, how can I access my billing invoices?",
+        "item_status": None,
+        "expected_tools": ["ticket_lookup", "customer_lookup", "rag_retrieval"],
+        "escalation_expected": True,
+    },
+    # T05: VIP customer C005 inquiry on order ORD-1004
+    {
+        "id": "T05", "customer_id": "C005",
+        "question": "I am VIP customer C005. What is the status of my order ORD-1004 and what is my escalation SLA?",
         "item_status": "unopened",
-        "expected_tools": ["inspect_documents"],
-        "escalation_expected": False,
+        "expected_tools": ["order_lookup", "customer_lookup"],
+        "escalation_expected": True,
     },
-    # Refund policy — agent retrieves from company documents
-    {
-        "id": "T04", "customer_id": "C001",
-        "question": "I want a refund for my opened item.",
-        "item_status": "opened",
-        "expected_tools": ["route_namespace", "rag_retrieval"],
-        "escalation_expected": False,
-    },
-    {
-        "id": "T05", "customer_id": "C002",
-        "question": "Can I get a refund for this opened item?",
-        "item_status": "opened",
-        "expected_tools": ["route_namespace", "rag_retrieval"],
-        "escalation_expected": False,
-    },
-    # Missing order — agent retrieves escalation policy from documents
+    # T06: General shipping timeframe
     {
         "id": "T06", "customer_id": "C001",
-        "question": "My order never arrived — what now?",
-        "item_status": "missing",
-        "expected_tools": ["rag_retrieval"],
-        "escalation_expected": True,
-    },
-    {
-        "id": "T07", "customer_id": "C003",
-        "question": "My package is marked delivered but it's missing.",
-        "item_status": "missing",
-        "expected_tools": ["rag_retrieval"],
-        "escalation_expected": True,
-    },
-    {
-        "id": "T08", "customer_id": "C004",
-        "question": "My order is missing and my account shows suspended.",
-        "item_status": "missing",
+        "question": "What are your standard shipping delivery timeframes and carrier options?",
+        "item_status": "unopened",
         "expected_tools": ["rag_retrieval"],
         "escalation_expected": False,
     },
-    # Unrelated question — agent should decline politely
+    # T07: Return initiation procedure
     {
-        "id": "T09", "customer_id": "C002",
-        "question": "What are my billing payment options?",
-        "item_status": None,
-        "expected_tools": ["route_namespace", "rag_retrieval"],
+        "id": "T07", "customer_id": "C001",
+        "question": "How do I initiate a return for delivered items in my order history?",
+        "item_status": "unopened",
+        "expected_tools": ["rag_retrieval"],
         "escalation_expected": False,
     },
-    # Ambiguous namespace — escalation policy from documents
+    # T08: Order tracking lookup
     {
-        "id": "T10", "customer_id": "C005",
-        "question": "What escalation path applies to premium customers?",
+        "id": "T08", "customer_id": "C002",
+        "question": "What is the carrier tracking number and shipping status for order ORD-1002?",
+        "item_status": "unopened",
+        "expected_tools": ["order_lookup"],
+        "escalation_expected": False,
+    },
+    # T09: Documentation catalog / metadata
+    {
+        "id": "T09", "customer_id": "C001",
+        "question": "What customer support policies, categories, and documentation namespaces are available?",
         "item_status": None,
-        "expected_tools": ["route_namespace", "rag_retrieval"],
+        "expected_tools": ["doc_metadata"],
+        "escalation_expected": False,
+    },
+    # T10: Compare policies across namespaces
+    {
+        "id": "T10", "customer_id": "C003",
+        "question": "Compare return policies and damaged item claim procedures across all categories.",
+        "item_status": None,
+        "expected_tools": ["multi_namespace"],
         "escalation_expected": False,
     },
 ]

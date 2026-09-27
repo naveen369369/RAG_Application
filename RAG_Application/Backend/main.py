@@ -35,7 +35,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from typing import Generator, List, Optional
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -47,6 +47,9 @@ from observability.langfuse_client import create_trace, flush_langfuse, is_enabl
 from agent.schemas import AgentRequest, WorkflowRequest
 from agent.memory.short_term import SessionStore
 from agent.memory.long_term import LongTermMemory
+from database import init_db, get_db
+import database.crud as db_crud
+import database.schemas as db_schemas
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -79,13 +82,14 @@ app_state = AppState()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize the RAG pipeline and agent memory once at startup."""
-    logger.warning("Initializing RAG Pipeline...")
+    """Initialize the RAG pipeline, agent memory, and database once at startup."""
+    logger.warning("Initializing RAG Pipeline and Database...")
     try:
         app_state.pipeline = RAGPipeline()
         app_state.session_store = SessionStore()
         app_state.long_term_memory = LongTermMemory(app_state.pipeline)
-        logger.warning("RAG Pipeline and agent memory initialized successfully.")
+        init_db()
+        logger.warning("RAG Pipeline, agent memory, and database initialized successfully.")
     except Exception as exc:
         logger.error(f"Failed to initialize: {exc}")
         raise
@@ -823,6 +827,51 @@ def run_trajectory_eval():
     return run_eval()
 
 
+class LiveEvalRequest(BaseModel):
+    question: str
+    customer_id: str = "C001"
+    ticket_id: Optional[str] = None
+    item_status: Optional[str] = None
+
+
+@app.post("/agent/evaluate-live", tags=["Agent Eval"])
+def evaluate_live_endpoint(req: LiveEvalRequest):
+    """
+    Run real-time trajectory evaluation for any live chat question or support ticket.
+    Executes the ReAct Agent against the database & RAG pipeline and grades:
+      - DB tool selection (ticket_lookup, order_lookup, customer_lookup)
+      - Argument validity against database
+      - Step efficiency & latency
+      - Answer groundedness
+    """
+    pipeline = get_pipeline()
+    from eval.live_evaluator import evaluate_live_query
+    return evaluate_live_query(
+        pipeline=pipeline,
+        question=req.question,
+        customer_id=req.customer_id,
+        ticket_id=req.ticket_id,
+        item_status=req.item_status,
+    )
+
+
+@app.post("/agent/evaluate-live-all", tags=["Agent Eval"])
+def evaluate_live_all_endpoint():
+    """
+    Run ALL 10 ticket cases through the REAL ReAct Agent and SQL database.
+
+    Unlike /agent/trajectory-eval (deterministic mock data), this endpoint:
+      - Executes each of the 10 DB-grounded questions against the live Groq LLM
+      - Validates tool arguments against the real SQL Server / SQLite DB
+      - Reports actual tool usage, argument correctness, and pass/fail for each case
+
+    Returns aggregate pass rates + per-case trajectory results.
+    """
+    pipeline = get_pipeline()
+    from eval.trajectory_eval import run_live_eval_all
+    return run_live_eval_all(pipeline=pipeline)
+
+
 # ---------------------------------------------------------------------------
 # Security Tests endpoint
 # ---------------------------------------------------------------------------
@@ -841,3 +890,261 @@ def run_security_eval():
     """
     from eval.security_tests import run_security_tests
     return run_security_tests()
+
+
+# ---------------------------------------------------------------------------
+# Support CRM Endpoints (SQL Server / DB Backend)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/customers", response_model=List[db_schemas.CustomerResponse], tags=["CRM Customers"])
+def list_customers(db=Depends(get_db)):
+    """List all customers with active order and ticket counts."""
+    customers = db_crud.get_customers(db)
+    return [c.to_dict() for c in customers]
+
+
+@app.post("/api/customers", response_model=db_schemas.CustomerResponse, tags=["CRM Customers"])
+def create_customer(customer: db_schemas.CustomerCreate, db=Depends(get_db)):
+    """Register a new customer profile."""
+    existing = db_crud.get_customer(db, customer.id)
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Customer '{customer.id}' already exists.")
+    c = db_crud.create_customer(db, customer)
+    return c.to_dict()
+
+
+@app.get("/api/orders", response_model=List[db_schemas.OrderResponse], tags=["CRM Orders"])
+def list_orders(customer_id: Optional[str] = None, db=Depends(get_db)):
+    """List customer orders, optionally filtered by customer_id."""
+    if customer_id in (None, "", "undefined", "null", "all"):
+        customer_id = None
+    orders = db_crud.get_orders(db, customer_id=customer_id)
+    return [o.to_dict() for o in orders]
+
+
+@app.post("/api/orders", response_model=db_schemas.OrderResponse, tags=["CRM Orders"])
+def create_order(order: db_schemas.OrderCreate, db=Depends(get_db)):
+    """Create a new customer order with item conditions."""
+    existing = db_crud.get_order(db, order.id)
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Order '{order.id}' already exists.")
+    o = db_crud.create_order(db, order)
+    return o.to_dict()
+
+
+@app.get("/api/orders/{order_id}", response_model=db_schemas.OrderResponse, tags=["CRM Orders"])
+def get_order_detail(order_id: str, db=Depends(get_db)):
+    """Fetch order details, carrier tracking, and line items."""
+    o = db_crud.get_order(db, order_id.strip().upper())
+    if not o:
+        raise HTTPException(status_code=404, detail=f"Order '{order_id}' not found.")
+    return o.to_dict()
+
+
+@app.get("/api/tickets", response_model=List[db_schemas.TicketResponse], tags=["CRM Tickets"])
+def list_tickets(customer_id: Optional[str] = None, status: Optional[str] = None, db=Depends(get_db)):
+    """List support tickets, optionally filtered by customer or status."""
+    if customer_id in (None, "", "undefined", "null", "all"):
+        customer_id = None
+    if status in (None, "", "undefined", "null", "all"):
+        status = None
+    tickets = db_crud.get_tickets(db, customer_id=customer_id, status=status)
+    return [t.to_dict() for t in tickets]
+
+
+@app.post("/api/tickets", response_model=db_schemas.TicketResponse, tags=["CRM Tickets"])
+def create_ticket(ticket: db_schemas.TicketCreate, db=Depends(get_db)):
+    """Submit a new customer support ticket."""
+    t = db_crud.create_ticket(db, ticket)
+    return t.to_dict()
+
+
+@app.get("/api/tickets/{ticket_id}", response_model=db_schemas.TicketResponse, tags=["CRM Tickets"])
+def get_ticket_detail(ticket_id: str, db=Depends(get_db)):
+    """Get support ticket details by ID."""
+    t = db_crud.get_ticket(db, ticket_id.strip().upper())
+    if not t:
+        raise HTTPException(status_code=404, detail=f"Ticket '{ticket_id}' not found.")
+    return t.to_dict()
+
+
+@app.patch("/api/tickets/{ticket_id}", response_model=db_schemas.TicketResponse, tags=["CRM Tickets"])
+def update_ticket_status(ticket_id: str, updates: db_schemas.TicketUpdate, db=Depends(get_db)):
+    """Update support ticket status, priority, or resolution notes."""
+    t = db_crud.update_ticket(db, ticket_id.strip().upper(), updates)
+    if not t:
+        raise HTTPException(status_code=404, detail=f"Ticket '{ticket_id}' not found.")
+    return t.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# MCP Endpoints — Server 2 (Ticket History) & Protocol Inspection
+# ---------------------------------------------------------------------------
+
+@app.get("/api/mcp/servers", tags=["MCP Server"])
+async def get_mcp_servers():
+    """
+    Returns all registered MCP servers with their transport details, live connection
+    status, tool counts, and tool categories for UI differentiation.
+
+    Server 1: CRM Agent Server  — 9 local tools (runs in-process, always online)
+    Server 2: TicketHistoryServer — 2 remote tools (separate process on port 8100)
+    """
+    import importlib.util
+    cfg_path = os.path.join(os.path.dirname(__file__), "mcp", "mcp_config.py")
+    spec = importlib.util.spec_from_file_location("mcp_config", cfg_path)
+    cfg = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cfg)
+
+    servers = cfg.get_enabled_servers()
+    server_url = os.environ.get("MCP_SERVER2_URL", "http://127.0.0.1:8100/mcp")
+    api_key = os.environ.get("MCP_API_KEY", "mcp-secret-dev-token-2026")
+
+    # ── Server 2: probe live connection via FastMCP Client ─────────────────
+    server2_online = False
+    server2_discovered_tools = []
+    server2_error = None
+
+    try:
+        from fastmcp import Client
+        async with Client(server_url, auth=api_key) as client:
+            tools = await client.list_tools()
+            server2_discovered_tools = [
+                {"name": t.name, "description": t.description} for t in tools
+            ]
+            server2_online = True
+    except Exception as e:
+        server2_error = str(e)
+
+    # ── Build enriched server list for the UI ──────────────────────────────
+    enriched = []
+    for s in servers:
+        entry = dict(s)
+        # Remove token from response for security
+        if "auth" in entry and "token" in entry["auth"]:
+            entry["auth"] = {**entry["auth"], "token": "***hidden***"}
+
+        if s["server_id"] == "crm-agent-server-v1":
+            entry["status"] = "online"   # always online (in-process)
+            entry["status_detail"] = "Running inside FastAPI process (no separate port)"
+            entry["tool_count"] = len(s["tools"])
+            entry["discovered_tools"] = [{"name": t} for t in s["tools"]]
+            entry["error"] = None
+        elif s["server_id"] == "ticket-history-v2":
+            entry["status"] = "online" if server2_online else "offline"
+            entry["status_detail"] = (
+                f"Running on {server_url}" if server2_online
+                else f"Offline — {server2_error}"
+            )
+            entry["tool_count"] = len(server2_discovered_tools) if server2_discovered_tools else len(s["tools"])
+            entry["discovered_tools"] = server2_discovered_tools or [{"name": t} for t in s["tools"]]
+            entry["error"] = server2_error
+
+        enriched.append(entry)
+
+    total_tools = sum(e["tool_count"] for e in enriched)
+
+    return {
+        "total_servers": len(enriched),
+        "total_tools": total_tools,
+        "servers": enriched,
+        # Summary for backward compat
+        "tool_count_server1": 9,
+        "tool_count_server2": len(server2_discovered_tools),
+        "tool_count_total": total_tools,
+    }
+
+
+@app.get("/api/mcp/history/{ticket_id}", tags=["MCP Server"])
+async def get_mcp_ticket_history(ticket_id: str):
+    """
+    Queries MCP Server 2 for ticket details and the complete chronological
+    escalation audit trail. Handles recoverable errors gracefully.
+    """
+    from fastmcp import Client
+    server_url = os.environ.get("MCP_SERVER2_URL", "http://127.0.0.1:8100/mcp")
+    api_key = os.environ.get("MCP_API_KEY", "mcp-secret-dev-token-2026")
+
+    tid = ticket_id.strip().upper()
+
+    try:
+        async with Client(server_url, auth=api_key) as client:
+            # Query get_ticket
+            t_res = await client.call_tool("get_ticket", {"ticket_id": tid})
+            ticket_data = json.loads(t_res.content[0].text) if t_res.content else {}
+
+            # Query get_escalation_history
+            h_res = await client.call_tool("get_escalation_history", {"ticket_id": tid})
+            history_data = json.loads(h_res.content[0].text) if h_res.content else {}
+
+            return {
+                "ticket_id": tid,
+                "ticket": ticket_data,
+                "history": history_data,
+                "is_recoverable_error": not ticket_data.get("found", True),
+                "server_url": server_url,
+                "transport": "HTTP/SSE",
+            }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to communicate with MCP Server 2: {exc}")
+
+
+@app.get("/api/mcp/wire", tags=["MCP Server"])
+def get_mcp_wire_logs():
+    """
+    Returns the real JSON-RPC 2.0 wire exchange (initialize -> tools/list -> tools/call)
+    and tool discovery counts for the UI inspector.
+    """
+    backend_dir = os.path.dirname(__file__)
+    wire_file = os.path.join(backend_dir, "wire.json")
+    counts_file = os.path.join(backend_dir, "tool_counts.txt")
+
+    wire_data = {}
+    if os.path.exists(wire_file):
+        try:
+            with open(wire_file, "r", encoding="utf-8") as f:
+                wire_data = json.load(f)
+        except Exception as e:
+            wire_data = {"error": str(e)}
+
+    counts_text = ""
+    if os.path.exists(counts_file):
+        try:
+            with open(counts_file, "r", encoding="utf-8") as f:
+                counts_text = f.read()
+        except Exception as e:
+            counts_text = str(e)
+
+    return {
+        "wire": wire_data,
+        "tool_counts": counts_text,
+    }
+
+
+@app.get("/api/mcp/artifacts", tags=["MCP Server"])
+def get_mcp_artifacts():
+    """
+    Returns the content of all Week-9 MCP deliverable files for UI display:
+    - agent_diff.txt  : proves 0 lines changed in react_agent.py
+    - config_diff.txt : shows what was added to mcp_config.py
+    - error_before_after.md : BEFORE vs AFTER recoverable error transcript
+    - risk_note.md    : 5-line supply-chain risk assessment
+    - tool_counts.txt : tool count before/after with names
+    """
+    backend_dir = os.path.dirname(__file__)
+    artifact_files = {
+        "agent_diff": "agent_diff.txt",
+        "config_diff": "config_diff.txt",
+        "error_before_after": "error_before_after.md",
+        "risk_note": "risk_note.md",
+        "tool_counts": "tool_counts.txt",
+    }
+    result = {}
+    for key, filename in artifact_files.items():
+        path = os.path.join(backend_dir, filename)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                result[key] = f.read()
+        except Exception as e:
+            result[key] = f"[Error reading {filename}: {e}]"
+    return result

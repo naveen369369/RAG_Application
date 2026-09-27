@@ -74,24 +74,27 @@ Never invent facts. Always end with Final Answer.
 
 REACT_SYSTEM_PROMPT_COMPLEX = """You are a customer support agent. Answer questions using ONLY the information returned by your tools.
 
-QUESTION TYPE: Complex (may require customer context + policy lookup)
+QUESTION TYPE: Complex (may require customer context, ticket status, order details, or policy lookup)
 
 RULES:
 - STRICT SCOPE: You are exclusively a customer support agent. If asked math calculations (e.g. 2+2, arithmetic, equations), coding, riddles, or unrelated general knowledge, immediately output Final Answer refusing to answer: "I am a customer support assistant and can only help with our products, orders, shipping, returns, billing, and account support. I cannot assist with math calculations or unrelated questions."
-- Step 1: If the question involves escalation, priority, or account-specific handling → call customer_lookup FIRST to get the customer's tier.
-- Step 2: Call rag_retrieval to find the relevant policy or procedure.
-- Step 3: Combine customer tier + policy to give a personalised Final Answer.
-- Maximum 3 tool calls. Think carefully before each call.
+- TICKET INQUIRIES: If the question mentions a ticket ID (e.g., TCK-1001, T01, etc.) → call ticket_lookup FIRST to fetch the ticket status, priority, and linked order.
+- ORDER INQUIRIES: If the question mentions an order ID (e.g., ORD-1001) → call order_lookup FIRST to inspect order status, tracking, and item condition.
+- ESCALATION / CUSTOMER CONTEXT: If the question involves escalation, customer tier, or priority handling → call customer_lookup to get tier (basic/premium/vip) and SLA.
+- POLICY SEARCH: Call rag_retrieval to find the company policy (returns, refunds, shipping rules).
+- Maximum 3 tool calls. Synthesize real database info + company policy into a grounded, direct Final Answer.
 - If info is insufficient after 2 tools, give the best answer you can and recommend contacting support.
 
 RESPONSE FORMAT:
-Thought: <what do I need to know — customer context or policy?>
-[call customer_lookup if customer tier is relevant]
-Thought: <what policy should I look up?>
-[call rag_retrieval with a precise query]
-Final Answer: <personalised answer combining customer tier + policy info>
+Thought: <what do I need to look up — ticket, order, customer context, or policy?>
+[call ticket_lookup / order_lookup / customer_lookup / rag_retrieval]
+Thought: <what policy or next step applies?>
+[call rag_retrieval if policy details needed]
+Final Answer: <direct, personalized answer combining DB facts + policy rules>
 
 TOOLS:
+- ticket_lookup   — get live support ticket subject, status, priority, customer tier, and linked order.
+- order_lookup    — get live order shipment status, carrier, tracking number, and item condition.
 - customer_lookup — get customer tier (basic/premium/vip), account status, escalation policy.
 - rag_retrieval   — search company documents for policies, procedures, and guidelines.
 - multi_namespace — search across ALL document categories at once (use for broad questions).
@@ -172,8 +175,8 @@ Respond with valid JSON only:
 }}
 
 Rules:
-- complexity=complex ONLY if the question involves: escalation, customer tier, premium/VIP treatment, account suspension, multi-step dependency.
-- needs_customer_context=true ONLY if knowing the customer's tier changes the answer.
+- complexity=complex if the question involves: a ticket ID (e.g. TCK-..., T01), an order ID (e.g. ORD-...), escalation, customer tier, premium/VIP treatment, account suspension, or multi-step dependency.
+- needs_customer_context=true if the question mentions a customer, order, ticket, or if knowing customer tier/account changes the answer.
 - rewritten_query: make the query specific and document-search friendly (e.g., "refund policy damaged items" not "I want my money back").
 """
         response = pipeline.llm.client.chat.completions.create(
@@ -480,6 +483,7 @@ def stream_agent(
 
     tool_calls_made = 0
     final_answer    = ""
+    tokens_streamed = False
     budget_hit      = False
     budget_reason   = ""
     budget_summary: Dict[str, Any] = {}
@@ -531,15 +535,19 @@ def stream_agent(
                                 from agent.tools.output_guardrails import guard_output
                                 final_answer = guard_output(raw_answer)
                                 yield _emit({"event": "thought", "text": content_str})
-                                for i, word in enumerate(final_answer.split(" ")):
-                                    yield _emit({"event": "token", "t": word if i == 0 else " " + word})
+                                if not tokens_streamed:
+                                    tokens_streamed = True
+                                    for i, word in enumerate(final_answer.split(" ")):
+                                        yield _emit({"event": "token", "t": word if i == 0 else " " + word})
                             elif not msg.tool_calls:
                                 from agent.tools.output_guardrails import guard_output
                                 final_answer = guard_output(content_str)
                                 if "Thought:" in content_str:
                                     yield _emit({"event": "thought", "text": content_str})
-                                for i, word in enumerate(final_answer.split(" ")):
-                                    yield _emit({"event": "token", "t": word if i == 0 else " " + word})
+                                if not tokens_streamed:
+                                    tokens_streamed = True
+                                    for i, word in enumerate(final_answer.split(" ")):
+                                        yield _emit({"event": "token", "t": word if i == 0 else " " + word})
                             else:
                                 if "Thought:" in content_str:
                                     yield _emit({"event": "thought", "text": content_str})
@@ -632,8 +640,10 @@ def stream_agent(
 
     from agent.tools.output_guardrails import guard_output
     final_answer = guard_output(final_answer)
-    for i, word in enumerate(final_answer.split(" ")):
-        yield _emit({"event": "token", "t": word if i == 0 else " " + word})
+    if not tokens_streamed and final_answer:
+        tokens_streamed = True
+        for i, word in enumerate(final_answer.split(" ")):
+            yield _emit({"event": "token", "t": word if i == 0 else " " + word})
 
     if budget_summary.get("abort"):
         budget_hit    = True

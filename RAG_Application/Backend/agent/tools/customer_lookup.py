@@ -133,8 +133,22 @@ def make_customer_lookup_tool():
                 "escalation": None,
             }
 
-        # 2. Existence check
-        profile = CUSTOMER_DB.get(cid)
+        # 2. Existence check — First attempt SQL database lookup, fallback to CUSTOMER_DB
+        profile = None
+        try:
+            from database.session import get_db_session
+            from database.crud import get_customer
+            db = get_db_session()
+            db_cust = get_customer(db, cid)
+            if db_cust:
+                profile = db_cust.to_dict()
+            db.close()
+        except Exception as db_err:
+            logger.debug("Database customer lookup fallback due to: %s", db_err)
+
+        if not profile:
+            profile = CUSTOMER_DB.get(cid)
+
         if not profile:
             logger.info("customer_lookup: ID %s not in CRM — treating as basic tier.", cid)
             return {
@@ -151,13 +165,13 @@ def make_customer_lookup_tool():
         return {
             "found": True,
             "customer_id": cid,
-            "name": profile["name"],
+            "name": profile.get("name", "Valued Customer"),
             "tier": tier,
-            "account_status": profile["account_status"],
-            "active_orders": profile["active_orders"],
-            "total_orders": profile["total_orders"],
-            "preferred_contact": profile["preferred_contact"],
-            "open_tickets": profile["open_tickets"],
+            "account_status": profile.get("account_status", "active"),
+            "active_orders": profile.get("active_orders", 0),
+            "total_orders": profile.get("total_orders", 0),
+            "preferred_contact": profile.get("preferred_contact", "email"),
+            "open_tickets": profile.get("open_tickets", 0),
             "escalation_policy": ESCALATION_POLICY.get(tier, ESCALATION_POLICY["basic"]),
         }
 

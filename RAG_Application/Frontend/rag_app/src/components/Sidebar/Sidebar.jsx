@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Sparkles, Plus, ChevronDown, Settings, FileText, FlaskConical, Layers } from 'lucide-react'
+import { Sparkles, Plus, ChevronDown, Settings, FileText, FlaskConical, Layers, Ticket, History, Database } from 'lucide-react'
+import { useAppContext } from '../../context/AppContext'
 import { useNamespaces } from '../../hooks/useNamespaces'
 import { NamespaceSelector } from './NamespaceSelector'
 import { RetrievalControls } from './RetrievalControls'
@@ -30,6 +31,7 @@ function SidebarSection({ icon, title, children, defaultOpen = true }) {
 
 export function Sidebar({ onNewChat, width, onWidthChange, onResizeStart, onResizeEnd, minWidth = 220, maxWidth = 520 }) {
   const { namespaces } = useNamespaces()
+  const { setTicketsDrawerOpen, setTicketsDrawerTab } = useAppContext()
   const isResizing = useRef(false)
   const startX = useRef(0)
   const startWidth = useRef(0)
@@ -131,10 +133,39 @@ export function Sidebar({ onNewChat, width, onWidthChange, onResizeStart, onResi
 
         <SidebarSection
           icon={<Layers className="w-3.5 h-3.5 flex-shrink-0" />}
-          title="Tools"
+          title="Tools & Data"
           defaultOpen={true}
         >
           <div className="px-4 space-y-2">
+            {/* Unified Common Button for Server 1 & Server 2 */}
+            <button
+              onClick={() => {
+                if (setTicketsDrawerTab) setTicketsDrawerTab('mcp_history')
+                setTicketsDrawerOpen(true)
+              }}
+              className="w-full flex items-center justify-between px-3 py-2.5 text-xs font-semibold rounded-xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border border-indigo-500/40 hover:border-indigo-400 text-white shadow-sm hover:shadow-indigo-500/20 transition-all group"
+              title="Unified MCP & CRM Hub: Server 1 (CRM & Orders) and Server 2 (Escalation Audit & Wire)"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-indigo-600/40 border border-indigo-400/30 flex items-center justify-center text-indigo-300 group-hover:scale-105 transition-transform">
+                  <Layers className="w-4 h-4 text-indigo-300" />
+                </div>
+                <div className="text-left leading-tight">
+                  <span className="block font-bold text-white text-[12px] group-hover:text-indigo-200">
+                    MCP &amp; CRM Operations
+                  </span>
+                  <span className="text-[10px] text-indigo-300/80 block font-normal">
+                    Server 1 &bull; Server 2 Hub
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-[10px] bg-indigo-500/30 text-indigo-200 border border-indigo-400/40 px-2 py-0.5 rounded-full font-mono font-bold tracking-tight">
+                  S1 + S2
+                </span>
+              </div>
+            </button>
             <DocumentStudio />
             <EvaluationPanel />
           </div>

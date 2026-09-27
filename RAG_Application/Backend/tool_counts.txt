@@ -1,0 +1,62 @@
+================================================================================
+MCP SERVER 1: CRM & KNOWLEDGE BASE (Local In-Process)
+Server ID: crm-agent-server-v1 | Transport: In-Process Registry | Tools: 9
+================================================================================
+  1. ticket_lookup          [MCP Server 1: CRM & Data]
+  2. order_lookup           [MCP Server 1: CRM & Data]
+  3. customer_lookup        [MCP Server 1: CRM & Data]
+  4. rag_retrieval          [MCP Server 1: Knowledge & RAG]
+  5. route_namespace        [MCP Server 1: Routing & Guardrails]
+  6. doc_summarizer         [MCP Server 1: Knowledge & RAG]
+  7. multi_namespace        [MCP Server 1: Routing & Guardrails]
+  8. doc_metadata           [MCP Server 1: Knowledge & RAG]
+  9. eval_trigger           [MCP Server 1: Evaluation & Quality]
+
+================================================================================
+MCP SERVER 2: TICKET ESCALATION & AUDIT TRAIL (Remote FastMCP)
+Server ID: ticket-history-v2 | Transport: HTTP/SSE (:8100) | Tools: 2
+================================================================================
+  1. get_ticket             [MCP Server 2: Escalation & Audit]
+  2. get_escalation_history [MCP Server 2: Escalation & Audit]
+
+================================================================================
+BEFORE vs AFTER DYNAMIC DISCOVERY COMPARISON
+================================================================================
+BEFORE SERVER 2 DISCOVERY: 9 tools (Server 1 only)
+  - ticket_lookup [MCP Server 1]
+  - order_lookup [MCP Server 1]
+  - customer_lookup [MCP Server 1]
+  - rag_retrieval [MCP Server 1]
+  - route_namespace [MCP Server 1]
+  - doc_summarizer [MCP Server 1]
+  - multi_namespace [MCP Server 1]
+  - doc_metadata [MCP Server 1]
+  - eval_trigger [MCP Server 1]
+
+AFTER SERVER 2 DISCOVERY: 11 tools (+2 dynamic tools from Server 2)
+  - ticket_lookup [MCP Server 1]
+  - order_lookup [MCP Server 1]
+  - customer_lookup [MCP Server 1]
+  - rag_retrieval [MCP Server 1]
+  - route_namespace [MCP Server 1]
+  - doc_summarizer [MCP Server 1]
+  - multi_namespace [MCP Server 1]
+  - doc_metadata [MCP Server 1]
+  - eval_trigger [MCP Server 1]
+  - get_ticket [MCP Server 2]
+  - get_escalation_history [MCP Server 2]
+
+================================================================================
+ARCHITECTURAL DIFFERENTIATION
+================================================================================
+Feature                  MCP Server 1                       MCP Server 2
+--------------------------------------------------------------------------------
+Server ID                crm-agent-server-v1                ticket-history-v2
+Server Name              Customer CRM & Local Tools         Ticket Escalation History
+Domain                   Customer CRM, Orders, RAG Docs     Audit Trail & Escalations
+Tool Count               9 tools                            2 tools
+Transport                In-Process / Direct Dispatch       HTTP / Server-Sent Events (SSE)
+Host Port                Internal Python Memory             http://127.0.0.1:8100/mcp
+Authentication           Internal Process Authorization     Bearer Token (MCP_API_KEY)
+Discovered Tools:        ['get_ticket', 'get_escalation_history']
+Total Agent Toolset:     11 Tools (9 from Server 1 + 2 from Server 2)

@@ -12,17 +12,33 @@ import {
   Sparkles,
   FileText,
   Percent,
+  Ticket,
+  Package,
+  User,
+  History,
+  Server,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react'
+import { getToolMeta } from './ToolCallBubble'
 
 export default function RetrievalModal({
   isOpen,
   onClose,
   message,
+  initialTab = 'chunks',
 }) {
-  const [activeTab, setActiveTab] = useState('chunks')
+  const [activeTab, setActiveTab] = useState(initialTab)
   const [copiedIndex, setCopiedIndex] = useState(null)
   const [copiedAll, setCopiedAll] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+
+  // Sync activeTab when modal is opened
+  useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab)
+    }
+  }, [isOpen, initialTab])
 
   // Close on Escape key
   useEffect(() => {
@@ -311,58 +327,212 @@ export default function RetrievalModal({
           {/* TAB 2: TOOL CALLS */}
           {activeTab === 'tools' && (
             <div className="space-y-4">
-              {toolCalls.map((tc, idx) => (
-                <div
-                  key={idx}
-                  className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs space-y-3"
-                >
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                    <div className="flex items-center gap-2">
-                      <div className="w-7 h-7 rounded-lg bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center">
-                        <Wrench className="w-3.5 h-3.5" />
-                      </div>
-                      <div>
-                        <span className="text-xs font-bold text-slate-800">
-                          {tc.tool}
-                        </span>
-                        <span
-                          className={`ml-2 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                            tc.status === 'done'
-                              ? 'bg-emerald-50 text-emerald-700'
-                              : 'bg-amber-50 text-amber-700'
-                          }`}
-                        >
-                          {tc.status === 'done' ? 'Completed' : 'Running'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Arguments */}
-                  {tc.args && Object.keys(tc.args).length > 0 && (
-                    <div>
-                      <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
-                        Arguments Passed
-                      </span>
-                      <div className="bg-slate-50 rounded-lg p-2.5 border border-slate-200/80 text-xs font-mono text-slate-800 overflow-x-auto">
-                        <pre>{JSON.stringify(tc.args, null, 2)}</pre>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Result preview */}
-                  {tc.result && (
-                    <div>
-                      <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block mb-1">
-                        Tool Output Result
-                      </span>
-                      <div className="bg-slate-900 rounded-lg p-3 text-xs font-mono text-emerald-300 max-h-48 overflow-y-auto">
-                        <pre>{JSON.stringify(tc.result, null, 2)}</pre>
-                      </div>
-                    </div>
-                  )}
+              {toolCalls.length === 0 ? (
+                <div className="text-center py-12 bg-white rounded-xl border border-slate-200 p-6 text-slate-500">
+                  <Wrench className="w-8 h-8 mx-auto mb-2 text-slate-300" />
+                  <p className="text-sm font-semibold text-slate-700">No Tool Calls Recorded</p>
+                  <p className="text-xs text-slate-400 mt-1">This response was answered without calling external tools or CRM databases.</p>
                 </div>
-              ))}
+              ) : (
+                toolCalls.map((tc, idx) => {
+                  const meta = getToolMeta(tc.tool)
+                  const IconComp = meta.icon
+                  const res = tc.result || {}
+
+                  return (
+                    <div
+                      key={idx}
+                      className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4 transition-all hover:border-slate-300"
+                    >
+                      {/* Tool Header with Category & Type */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-9 h-9 rounded-xl flex items-center justify-center border shadow-2xs ${meta.badgeColor}`}>
+                            <IconComp className="w-4 h-4 text-current" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-bold text-slate-900 font-mono">
+                                {tc.tool}
+                              </span>
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${meta.badgeColor}`}>
+                                {meta.category}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-[11px] text-slate-500 font-medium">
+                                Tool Type: <span className="font-semibold text-slate-700">{meta.typeLabel}</span>
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full ${
+                              tc.status === 'done'
+                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                : 'bg-amber-50 text-amber-700 border border-amber-200 animate-pulse'
+                            }`}
+                          >
+                            {tc.status === 'done' ? '✓ Completed' : '⚡ Running…'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Arguments Section */}
+                      {tc.args && Object.keys(tc.args).length > 0 && (
+                        <div className="bg-slate-50/80 rounded-xl p-3 border border-slate-100">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">
+                            Input Parameters / Arguments
+                          </span>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                            {Object.entries(tc.args).map(([k, v]) => (
+                              <div key={k} className="flex items-center gap-2 bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/70 font-mono">
+                                <span className="text-slate-500 font-semibold">{k}:</span>
+                                <span className="text-slate-800 font-bold truncate">{String(v)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Specialized Structured Output Card for Tickets */}
+                      {(tc.tool === 'ticket_lookup' || tc.tool === 'get_ticket') && res.found && (
+                        <div className="bg-emerald-50/50 border border-emerald-100 rounded-xl p-3.5 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-emerald-900 flex items-center gap-1.5">
+                              <Ticket className="w-3.5 h-3.5 text-emerald-600" />
+                              Ticket Record: #{res.ticket_id || tc.args?.ticket_id}
+                            </span>
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 uppercase">
+                              Status: {res.status || 'Active'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                            {res.customer_id && (
+                              <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                                <span className="text-[10px] text-slate-400 block">Customer</span>
+                                <span className="font-semibold text-slate-800">{res.customer_name || res.customer_id}</span>
+                              </div>
+                            )}
+                            {res.priority && (
+                              <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                                <span className="text-[10px] text-slate-400 block">Priority</span>
+                                <span className="font-semibold text-slate-800 capitalize">{res.priority}</span>
+                              </div>
+                            )}
+                            {res.order_id && (
+                              <div className="bg-white p-2 rounded-lg border border-emerald-100">
+                                <span className="text-[10px] text-slate-400 block">Linked Order</span>
+                                <span className="font-semibold text-indigo-700">#{res.order_id}</span>
+                              </div>
+                            )}
+                          </div>
+                          {res.subject && (
+                            <p className="text-xs text-slate-700 bg-white p-2.5 rounded-lg border border-emerald-100">
+                              <span className="font-semibold text-slate-900">Issue: </span>
+                              {res.subject} {res.description && `— ${res.description}`}
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Specialized Structured Output Card for Orders */}
+                      {tc.tool === 'order_lookup' && res.found && (
+                        <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-3.5 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-indigo-900 flex items-center gap-1.5">
+                              <Package className="w-3.5 h-3.5 text-indigo-600" />
+                              Order Record: #{res.order_id || tc.args?.order_id}
+                            </span>
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 uppercase">
+                              {res.status || 'Active'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
+                            <div className="bg-white p-2 rounded-lg border border-indigo-100">
+                              <span className="text-[10px] text-slate-400 block">Carrier</span>
+                              <span className="font-semibold text-slate-800">{res.carrier || 'N/A'}</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-indigo-100">
+                              <span className="text-[10px] text-slate-400 block">Tracking</span>
+                              <span className="font-mono text-slate-800 font-semibold">{res.tracking_number || 'N/A'}</span>
+                            </div>
+                            <div className="bg-white p-2 rounded-lg border border-indigo-100">
+                              <span className="text-[10px] text-slate-400 block">Total</span>
+                              <span className="font-semibold text-emerald-700">${res.order_total || '0.00'}</span>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Specialized Escalation History Timeline Viewer */}
+                      {Array.isArray(res.history) && res.history.length > 0 && (
+                        <div className="bg-violet-50/50 border border-violet-100 rounded-xl p-3.5 space-y-2.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-violet-900 flex items-center gap-1.5">
+                              <History className="w-3.5 h-3.5 text-violet-600" />
+                              Escalation Audit Trail ({res.history.length} events)
+                            </span>
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-violet-100 text-violet-800 font-semibold">
+                              FastMCP Protocol
+                            </span>
+                          </div>
+                          <div className="space-y-2">
+                            {res.history.map((ev, i) => (
+                              <div key={i} className="bg-white p-2.5 rounded-lg border border-violet-100 text-xs space-y-1">
+                                <div className="flex items-center justify-between text-[11px]">
+                                  <span className="font-bold text-slate-800">{ev.actor}</span>
+                                  <span className="px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 font-semibold uppercase text-[10px]">
+                                    {ev.action}
+                                  </span>
+                                </div>
+                                <p className="text-slate-600 text-xs">{ev.note}</p>
+                                <span className="text-[10px] text-slate-400 block">{ev.timestamp}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Recoverable Error Display */}
+                      {res.found === false && (
+                        <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 text-xs text-rose-800 space-y-1">
+                          <span className="font-bold text-rose-900 flex items-center gap-1.5">
+                            <span>⚠ Recoverable Error Handled:</span>
+                          </span>
+                          <p className="bg-white/85 p-2.5 rounded-lg border border-rose-200 font-mono text-[11px] text-rose-950">
+                            {res.message || res.error || 'Entity not found'}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Full Raw Output JSON Inspector */}
+                      {tc.result && (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between text-[11px] text-slate-500 font-semibold">
+                            <span>Raw Tool Output Payload:</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                navigator.clipboard.writeText(JSON.stringify(tc.result, null, 2))
+                              }}
+                              className="text-[10px] text-blue-600 hover:text-blue-800 flex items-center gap-1 hover:underline cursor-pointer"
+                            >
+                              <Copy className="w-2.5 h-2.5" />
+                              <span>Copy JSON</span>
+                            </button>
+                          </div>
+                          <div className="bg-slate-900 rounded-xl p-3 text-xs font-mono text-emerald-300 max-h-48 overflow-y-auto shadow-inner">
+                            <pre>{JSON.stringify(tc.result, null, 2)}</pre>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })
+              )}
             </div>
           )}
 

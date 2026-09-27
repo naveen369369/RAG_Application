@@ -2,7 +2,11 @@ export const API_BASE = 'http://localhost:8000'
 
 export async function apiGet(path, params = {}) {
   const url = new URL(`${API_BASE}${path}`)
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)))
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '' && v !== 'undefined') {
+      url.searchParams.set(k, String(v))
+    }
+  })
   const res = await fetch(url.toString())
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`)
   return res.json()

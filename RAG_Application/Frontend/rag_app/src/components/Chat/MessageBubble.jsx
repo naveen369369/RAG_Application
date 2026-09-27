@@ -16,6 +16,7 @@ import RetrievalModal from './RetrievalModal'
 export function MessageBubble({ message }) {
   const [copied, setCopied] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
+  const [modalInitialTab, setModalInitialTab] = useState('chunks')
 
   const isUser = message.role === 'user'
   const isAgent = !isUser && message.agentMode
@@ -28,7 +29,7 @@ export function MessageBubble({ message }) {
     Array.isArray(message.sources) && message.sources.length > 0
       ? message.sources
       : message.toolCalls?.find((tc) => tc.tool === 'rag_retrieval' && tc.result?.chunks)
-          ?.result?.chunks || []
+        ?.result?.chunks || []
 
   const handleCopy = () => {
     if (!message.content) return
@@ -44,13 +45,12 @@ export function MessageBubble({ message }) {
     <div className={`flex gap-3.5 mb-6 group ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
       {/* Avatar */}
       <div
-        className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5 shadow-xs transition-transform ${
-          isUser
+        className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5 shadow-xs transition-transform ${isUser
             ? 'bg-slate-200 text-slate-600'
             : isAgent
-            ? 'bg-violet-600 text-white shadow-violet-200'
-            : 'bg-blue-600 text-white shadow-blue-200'
-        }`}
+              ? 'bg-violet-600 text-white shadow-violet-200'
+              : 'bg-blue-600 text-white shadow-blue-200'
+          }`}
       >
         {isUser ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
       </div>
@@ -65,11 +65,10 @@ export function MessageBubble({ message }) {
 
         {/* Message Bubble Container */}
         <div
-          className={`rounded-2xl px-4 py-3.5 sm:px-5 sm:py-4 transition-all ${
-            isUser
+          className={`rounded-2xl px-4 py-3.5 sm:px-5 sm:py-4 transition-all ${isUser
               ? 'bg-blue-600 text-white rounded-tr-xs shadow-xs'
               : 'bg-white border border-slate-200/90 text-slate-800 rounded-tl-xs shadow-xs hover:border-slate-300'
-          }`}
+            }`}
         >
           {/* User message */}
           {isUser ? (
@@ -91,8 +90,8 @@ export function MessageBubble({ message }) {
                     {runningTool
                       ? `Executing ${runningTool.tool}…`
                       : isAgent
-                      ? 'Agent is thinking & searching documents…'
-                      : 'Searching knowledge base & generating answer…'}
+                        ? 'Agent is thinking & searching documents…'
+                        : 'Searching knowledge base & generating answer…'}
                   </span>
                 </div>
               )}
@@ -132,19 +131,27 @@ export function MessageBubble({ message }) {
         {/* Assistant Footer Actions & Badges */}
         {!isUser && (
           <div className="flex flex-wrap items-center gap-2 mt-1.5 px-1">
-            {/* Metadata badges (latency, rerank, etc.) */}
+            {/* Metadata badges (latency, rerank, tool call details) */}
             <MetadataBadges
               latency_ms={message.latency_ms}
               reranked={message.reranked}
               hyde={message.hyde}
               tool_calls_made={message.tool_calls_made}
+              toolCalls={message.toolCalls}
+              onOpenToolsModal={() => {
+                setModalInitialTab('tools')
+                setModalOpen(true)
+              }}
               agent={isAgent}
             />
 
             {/* Single clean source citations button (opens rich popup window) */}
             <SourcePanel
               sources={resolvedSources}
-              onOpenModal={() => setModalOpen(true)}
+              onOpenModal={() => {
+                setModalInitialTab('chunks')
+                setModalOpen(true)
+              }}
             />
 
             {/* Copy Response Button */}
@@ -177,9 +184,11 @@ export function MessageBubble({ message }) {
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
         message={{ ...message, sources: resolvedSources }}
+        initialTab={modalInitialTab}
       />
     </div>
   )
 }
 
 export default MessageBubble
+

@@ -59,104 +59,151 @@ class TicketCase:
 # 2. 10 Ticket Cases
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# DB Ticket subjects — exact real questions from support_tickets table
+# ---------------------------------------------------------------------------
+# TCK-1001: Alice Johnson (C001, ORD-1001) — opened headphones refund
+# TCK-1002: Bob Smith   (C002, ORD-1002) — address change while shipped
+# TCK-1003: Carol White (C003, ORD-1003) — damaged water bottle replacement
+# TCK-1004: David Lee   (C004)           — suspended account + billing invoices
+
 TICKET_CASES: List[TicketCase] = [
     TicketCase(
         id="T01",
-        question="What is your return policy?",
+        # Exact subject from DB: TCK-1001 — 'Refund requested for opened headphones'
+        question=(
+            "Ticket TCK-1001 (subject: 'Refund requested for opened headphones'). "
+            "I opened and tested the headphones but they feel uncomfortable. "
+            "Can I still return order ORD-1001 for a refund?"
+        ),
         customer_id="C001",
-        expected_tools=["rag_retrieval"],
-        alt_tools=[["multi_namespace"]],
-        expected_outcome_keywords=["return", "policy", "days"],
-        is_complex=False,
-        required_steps=1,
-    ),
-    TicketCase(
-        id="T02",
-        question="I want to cancel my order #12345, I'm customer C002",
-        customer_id="C002",
-        expected_tools=["customer_lookup", "rag_retrieval"],
-        alt_tools=[],
-        expected_outcome_keywords=["cancel", "order", "process"],
+        expected_tools=["ticket_lookup", "rag_retrieval"],
+        alt_tools=[["order_lookup", "rag_retrieval"]],
+        expected_outcome_keywords=["headphones", "opened", "return", "policy", "refund"],
         is_complex=True,
         required_steps=2,
     ),
     TicketCase(
+        id="T02",
+        # Exact subject from DB: TCK-1002 — 'Address change request for in-transit package'
+        question=(
+            "Ticket TCK-1002 (subject: 'Address change request for in-transit package'). "
+            "I need to redirect my keyboard delivery from ORD-1002 to my office address "
+            "because I will be traveling. Can I change the address while it is shipped?"
+        ),
+        customer_id="C002",
+        expected_tools=["ticket_lookup", "order_lookup", "rag_retrieval"],
+        alt_tools=[["order_lookup", "rag_retrieval"]],
+        expected_outcome_keywords=["address", "shipped", "carrier", "ups", "transit"],
+        is_complex=True,
+        required_steps=3,
+    ),
+    TicketCase(
         id="T03",
-        question="As a VIP customer, what's my refund SLA?",
-        customer_id="C005",
-        expected_tools=["customer_lookup", "rag_retrieval"],
-        alt_tools=[],
-        expected_outcome_keywords=["refund", "vip", "sla", "hours"],
+        # Exact subject from DB: TCK-1003 — 'Package arrived damaged - crushed box'
+        question=(
+            "Ticket TCK-1003 (subject: 'Package arrived damaged - crushed box'). "
+            "My smart water bottle from order ORD-1003 arrived with a completely crushed box "
+            "and the screen is cracked. I have photos ready. What are my replacement options?"
+        ),
+        customer_id="C003",
+        expected_tools=["ticket_lookup", "rag_retrieval"],
+        alt_tools=[["customer_lookup", "rag_retrieval"]],
+        expected_outcome_keywords=["damaged", "replacement", "photos", "refund"],
         is_complex=True,
         required_steps=2,
     ),
     TicketCase(
         id="T04",
-        question="What topics does your knowledge base cover?",
-        customer_id="C001",
-        expected_tools=["doc_metadata"],
-        alt_tools=[["doc_summarizer"]],
-        expected_outcome_keywords=["topics", "categories", "cover"],
-        is_complex=False,
-        required_steps=1,
+        # Exact subject from DB: TCK-1004 — 'Account suspended - need billing invoices'
+        question=(
+            "Ticket TCK-1004 (subject: 'Account suspended - need billing invoices'). "
+            "My account shows suspended status when logging in. "
+            "I need access to download my past invoices for tax purposes. How can I resolve this?"
+        ),
+        customer_id="C004",
+        expected_tools=["ticket_lookup", "customer_lookup", "rag_retrieval"],
+        alt_tools=[["customer_lookup", "rag_retrieval"]],
+        expected_outcome_keywords=["suspended", "invoices", "support", "billing"],
+        is_complex=True,
+        required_steps=3,
     ),
     TicketCase(
         id="T05",
-        question="What are your shipping options and delivery times?",
-        customer_id="C001",
-        expected_tools=["rag_retrieval"],
-        alt_tools=[["multi_namespace"]],
-        expected_outcome_keywords=["shipping", "delivery", "days"],
-        is_complex=False,
-        required_steps=1,
-    ),
-    TicketCase(
-        id="T06",
-        question="My account was suspended unfairly. I need it restored immediately.",
-        customer_id="C004",
-        expected_tools=["customer_lookup", "rag_retrieval"],
-        alt_tools=[],
-        expected_outcome_keywords=["account", "suspend", "restore", "contact"],
+        # Real order ORD-1004 from DB — VIP customer C005, $1450 Curved Monitor, processing
+        question=(
+            "I am VIP customer C005 (Eva Martinez). "
+            "What is the current status of my order ORD-1004 (Ultra-Wide 49-inch Curved Monitor, $1,450) "
+            "and what is my dedicated VIP escalation SLA?"
+        ),
+        customer_id="C005",
+        expected_tools=["order_lookup", "customer_lookup"],
+        alt_tools=[["customer_lookup", "order_lookup"]],
+        expected_outcome_keywords=["vip", "sla", "hours", "processing", "monitor"],
         is_complex=True,
         required_steps=2,
     ),
     TicketCase(
-        id="T07",
-        question="Compare billing policies and refund procedures across all categories",
+        id="T06",
+        # General policy — shipping timeframes (RAG-only, no DB lookup needed)
+        question="What are your standard shipping delivery timeframes and carrier options?",
         customer_id="C001",
-        expected_tools=["multi_namespace"],
-        alt_tools=[["rag_retrieval"]],
-        expected_outcome_keywords=["billing", "refund", "policy"],
+        expected_tools=["rag_retrieval"],
+        alt_tools=[["multi_namespace"]],
+        expected_outcome_keywords=["shipping", "standard", "days", "fedex"],
+        is_complex=False,
+        required_steps=1,
+    ),
+    TicketCase(
+        id="T07",
+        # General policy — return initiation steps (RAG-only)
+        question="How do I initiate a return for a delivered item from my order history?",
+        customer_id="C001",
+        expected_tools=["rag_retrieval"],
+        alt_tools=[["multi_namespace"]],
+        expected_outcome_keywords=["orders", "history", "start", "return", "label"],
         is_complex=False,
         required_steps=1,
     ),
     TicketCase(
         id="T08",
-        question="How do I reset my account password?",
-        customer_id="C001",
-        expected_tools=["rag_retrieval"],
-        alt_tools=[],
-        expected_outcome_keywords=["password", "reset", "email", "link"],
-        is_complex=False,
+        # Real order ORD-1002 from DB — Bob Smith, UPS shipped, Keyboard + Docking Station
+        question=(
+            "What is the carrier, tracking number, and current shipping status "
+            "for my order ORD-1002?"
+        ),
+        customer_id="C002",
+        expected_tools=["order_lookup"],
+        alt_tools=[["customer_lookup", "order_lookup"]],
+        expected_outcome_keywords=["ups", "shipped", "tracking", "keyboard"],
+        is_complex=True,
         required_steps=1,
     ),
     TicketCase(
         id="T09",
-        question="I need priority escalation for my damaged item — I'm customer C005",
-        customer_id="C005",
-        expected_tools=["customer_lookup", "rag_retrieval"],
-        alt_tools=[],
-        expected_outcome_keywords=["escalation", "vip", "priority", "damaged"],
-        is_complex=True,
-        required_steps=2,
+        # Documentation catalog — what namespaces/policies are available (metadata tool)
+        question=(
+            "What customer support policy categories and documentation namespaces "
+            "are available in your knowledge base?"
+        ),
+        customer_id="C001",
+        expected_tools=["doc_metadata"],
+        alt_tools=[["doc_summarizer"]],
+        expected_outcome_keywords=["namespaces", "shipping", "returns", "billing", "accounts"],
+        is_complex=False,
+        required_steps=1,
     ),
     TicketCase(
         id="T10",
-        question="Give me a full summary of your returns and refunds section",
-        customer_id="C001",
-        expected_tools=["doc_summarizer"],
+        # Cross-namespace comparison — returns + damaged items (multi_namespace tool)
+        question=(
+            "Compare your return policies and damaged-on-arrival item claim procedures "
+            "across all support categories."
+        ),
+        customer_id="C003",
+        expected_tools=["multi_namespace"],
         alt_tools=[["rag_retrieval"]],
-        expected_outcome_keywords=["return", "refund", "summary"],
+        expected_outcome_keywords=["returns", "damaged", "policy", "refund"],
         is_complex=False,
         required_steps=1,
     ),
@@ -164,7 +211,7 @@ TICKET_CASES: List[TicketCase] = [
 
 
 # ---------------------------------------------------------------------------
-# 3. Mock trajectory responses (before mitigation)
+# 3. Trajectory Benchmark Trajectories
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -186,115 +233,113 @@ class MockTrajectoryResult:
     failure_mode: Optional[str] = None
 
 
-# Deterministic mock trajectories — "before mitigation"
+# Deterministic benchmark trajectories — "before mitigation"
 _MOCK_BEFORE: Dict[str, MockTrajectoryResult] = {
     "T01": MockTrajectoryResult(
         "T01",
-        actual_tools=["rag_retrieval"],
-        actual_args={"query": "return policy", "namespace": "all"},
-        outcome_answer="Our return policy allows returns within 30 days of purchase.",
-        latency_ms=420, input_tokens=312, output_tokens=88,
+        actual_tools=["ticket_lookup", "rag_retrieval"],
+        actual_args={"ticket_id": "TCK-1001"},
+        outcome_answer="Ticket #TCK-1001 details show opened headphones for order ORD-1001. Under our 30-day policy, opened items in good condition qualify for return with 15% restocking fee.",
+        latency_ms=620, input_tokens=450, output_tokens=110,
         outcome_pass=True,
     ),
     "T02": MockTrajectoryResult(
         "T02",
-        # BUG: agent skipped customer_lookup, fabricated customer tier
+        # BUG: skipped ticket_lookup, called rag directly
         actual_tools=["rag_retrieval"],
-        actual_args={"query": "cancel order", "namespace": "all"},
-        outcome_answer="To cancel your order, please contact support. Standard SLA applies.",
+        actual_args={"query": "change delivery address shipped"},
+        outcome_answer="You cannot change address once package is shipped without contacting carrier.",
         latency_ms=390, input_tokens=290, output_tokens=72,
-        outcome_pass=True,   # answer sounds OK but wrong path (no personalisation)
+        outcome_pass=True,
         failure_mode="wrong_tool_sequence",
     ),
     "T03": MockTrajectoryResult(
         "T03",
-        actual_tools=["customer_lookup", "rag_retrieval"],
-        actual_args={"customer_id": "C005"},
-        outcome_answer="As a VIP customer, your refund SLA is 2 hours via dedicated rep.",
-        latency_ms=710, input_tokens=540, output_tokens=120,
+        actual_tools=["ticket_lookup", "rag_retrieval"],
+        actual_args={"ticket_id": "TCK-1003"},
+        outcome_answer="For ticket #TCK-1003 (damaged smart water bottle), submit photos of packaging to receive a replacement shipped within 2 business days.",
+        latency_ms=690, input_tokens=520, output_tokens=125,
         outcome_pass=True,
     ),
     "T04": MockTrajectoryResult(
         "T04",
-        actual_tools=["doc_metadata"],
-        actual_args={},
-        outcome_answer="We cover: returns, billing, shipping, account management, product warranties.",
-        latency_ms=310, input_tokens=220, output_tokens=60,
-        outcome_pass=True,
+        # BUG: fabricated customer ID
+        actual_tools=["ticket_lookup", "customer_lookup", "rag_retrieval"],
+        actual_args={"customer_id": "CUST-UNKNOWN"},
+        outcome_answer="Account access requires contacting support within 48 hours.",
+        latency_ms=750, input_tokens=580, output_tokens=90,
+        outcome_pass=False,
+        failure_mode="argument_fabrication",
     ),
     "T05": MockTrajectoryResult(
         "T05",
-        actual_tools=["rag_retrieval"],
-        actual_args={"query": "shipping options delivery times", "namespace": "all"},
-        outcome_answer="We offer standard (5-7 days), express (2-3 days), and overnight shipping.",
-        latency_ms=430, input_tokens=330, output_tokens=90,
-        outcome_pass=True,
+        # BUG: fabricated VIP ID
+        actual_tools=["order_lookup", "customer_lookup"],
+        actual_args={"customer_id": "VIP-ESCALATE"},
+        outcome_answer="Order ORD-1004 is currently processing. Priority escalation initiated.",
+        latency_ms=640, input_tokens=490, output_tokens=105,
+        outcome_pass=False,
+        failure_mode="argument_fabrication",
     ),
     "T06": MockTrajectoryResult(
         "T06",
-        # BUG: agent fabricated customer_id "CUST-UNKNOWN" instead of using C004
-        actual_tools=["customer_lookup", "rag_retrieval"],
-        actual_args={"customer_id": "CUST-UNKNOWN"},   # fabricated ID
-        outcome_answer="Your account appears to be basic tier. Contact support within 48h.",
-        latency_ms=680, input_tokens=510, output_tokens=100,
-        outcome_pass=False,  # wrong tier cited (basic instead of suspended)
-        failure_mode="argument_fabrication",
+        actual_tools=["rag_retrieval"],
+        actual_args={"query": "shipping delivery timeframes carrier"},
+        outcome_answer="Standard domestic shipping takes 5-7 business days via FedEx/USPS, expedited takes 2-3 business days.",
+        latency_ms=430, input_tokens=330, output_tokens=90,
+        outcome_pass=True,
     ),
     "T07": MockTrajectoryResult(
         "T07",
-        actual_tools=["multi_namespace"],
-        actual_args={"query": "billing refund policy"},
-        outcome_answer="Billing policies: net-30 invoicing. Refund policy: 30-day window.",
-        latency_ms=520, input_tokens=400, output_tokens=110,
+        actual_tools=["rag_retrieval"],
+        actual_args={"query": "initiate return order history"},
+        outcome_answer="Log in to your account, go to Orders > Order History, select your item and click Start Return to generate a prepaid label.",
+        latency_ms=440, input_tokens=320, output_tokens=95,
         outcome_pass=True,
     ),
     "T08": MockTrajectoryResult(
         "T08",
-        actual_tools=["rag_retrieval"],
-        actual_args={"query": "reset account password", "namespace": "all"},
-        outcome_answer="To reset your password, click 'Forgot Password' on the login page and follow the email link.",
-        latency_ms=400, input_tokens=300, output_tokens=80,
+        actual_tools=["order_lookup"],
+        actual_args={"order_id": "ORD-1002"},
+        outcome_answer="Order #ORD-1002 is shipped via UPS with tracking 1Z9999999999999999 containing Mechanical Ergonomic Keyboard and Docking Station.",
+        latency_ms=410, input_tokens=310, output_tokens=85,
         outcome_pass=True,
     ),
     "T09": MockTrajectoryResult(
         "T09",
-        # BUG: agent fabricated customer_id "VIP-ESCALATE" instead of C005
-        actual_tools=["customer_lookup", "rag_retrieval"],
-        actual_args={"customer_id": "VIP-ESCALATE"},   # fabricated ID
-        outcome_answer="Priority escalation initiated. Expect a callback within 4 hours.",
-        latency_ms=690, input_tokens=520, output_tokens=115,
-        outcome_pass=False,  # cited wrong SLA (4h vs VIP 2h)
-        failure_mode="argument_fabrication",
+        actual_tools=["doc_metadata"],
+        actual_args={},
+        outcome_answer="Available documentation namespaces include: shipping, returns_refunds, billing_payments, and account_security.",
+        latency_ms=310, input_tokens=220, output_tokens=60,
+        outcome_pass=True,
     ),
     "T10": MockTrajectoryResult(
         "T10",
-        actual_tools=["doc_summarizer"],
-        actual_args={"namespace": "returns"},
-        outcome_answer="Returns section summary: 30-day window, proof of purchase required, refunds in 5-7 business days.",
-        latency_ms=480, input_tokens=360, output_tokens=100,
+        actual_tools=["multi_namespace"],
+        actual_args={"query": "returns and damaged item claims"},
+        outcome_answer="Standard returns have a 30-day window. Damaged-on-arrival items receive expedited replacement without return shipping requirement.",
+        latency_ms=520, input_tokens=400, output_tokens=110,
         outcome_pass=True,
     ),
 }
 
-# After mitigation: argument_fabrication cases are fixed; wrong_tool_sequence is unchanged
+# After mitigation: argument_fabrication cases are fixed by strict SQL validation
 _MOCK_AFTER: Dict[str, MockTrajectoryResult] = dict(_MOCK_BEFORE)
-# T06 — now validation rejects "CUST-UNKNOWN", agent replans with C004
-_MOCK_AFTER["T06"] = MockTrajectoryResult(
-    "T06",
-    actual_tools=["customer_lookup", "rag_retrieval"],
-    actual_args={"customer_id": "C004"},  # correct real ID
-    outcome_answer="Your account (C004) is currently suspended. Our account policy requires 2-5 business days review. Please email support@company.com.",
-    latency_ms=702, input_tokens=510, output_tokens=108,
+_MOCK_AFTER["T04"] = MockTrajectoryResult(
+    "T04",
+    actual_tools=["ticket_lookup", "customer_lookup", "rag_retrieval"],
+    actual_args={"customer_id": "C004"},
+    outcome_answer="Ticket TCK-1004 confirmed for customer David Lee (C004). Account is suspended; billing invoices can be downloaded via secure one-time email link from support.",
+    latency_ms=710, input_tokens=530, output_tokens=112,
     outcome_pass=True,
     failure_mode=None,
 )
-# T09 — now validation rejects "VIP-ESCALATE", agent replans with C005
-_MOCK_AFTER["T09"] = MockTrajectoryResult(
-    "T09",
-    actual_tools=["customer_lookup", "rag_retrieval"],
-    actual_args={"customer_id": "C005"},  # correct real ID
-    outcome_answer="As a VIP customer (C005), your damaged item escalation gets critical priority with 2-hour SLA via your dedicated rep.",
-    latency_ms=715, input_tokens=522, output_tokens=120,
+_MOCK_AFTER["T05"] = MockTrajectoryResult(
+    "T05",
+    actual_tools=["order_lookup", "customer_lookup"],
+    actual_args={"customer_id": "C005"},
+    outcome_answer="For VIP customer Eva Martinez (C005), order ORD-1004 is processing ($1450 Curved Monitor). Your VIP escalation SLA is 2 hours with dedicated rep access.",
+    latency_ms=660, input_tokens=505, output_tokens=115,
     outcome_pass=True,
     failure_mode=None,
 )
@@ -641,7 +686,92 @@ def _print_report(result: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 10. Entrypoint
+# 10. Live Batch Evaluation — real agent + DB (no mocks)
+# ---------------------------------------------------------------------------
+
+def run_live_eval_all(pipeline) -> Dict[str, Any]:
+    """
+    Run all 10 TICKET_CASES through the REAL ReAct Agent and SQL database.
+    Unlike run_eval() which uses deterministic mock data, this function:
+      - Calls stream_agent() for each case against the live Groq LLM
+      - Validates tool arguments against the real SQL DB
+      - Reports actual tool usage, latency, and pass/fail outcomes
+
+    Args:
+        pipeline: The initialized RAGPipeline instance from app_state.
+
+    Returns:
+        Dict with per-case live results + aggregate metrics.
+    """
+    from eval.live_evaluator import evaluate_live_query
+
+    t0 = time.monotonic()
+    case_results = []
+    errors = []
+
+    for case in TICKET_CASES:
+        logger.info(f"[LIVE EVAL] Running {case.id}: {case.question[:60]}...")
+        try:
+            result = evaluate_live_query(
+                pipeline=pipeline,
+                question=case.question,
+                customer_id=case.customer_id,
+                # Pass ticket_id if question references a specific TCK-xxx
+                ticket_id=next(
+                    (m.group(0).upper() for m in [__import__("re").search(r"TCK-\d+", case.question)] if m),
+                    None
+                ),
+            )
+            result["case_id"] = case.id
+            result["expected_tools"] = case.expected_tools
+            result["is_complex"] = case.is_complex
+            case_results.append(result)
+        except Exception as exc:
+            logger.error(f"[LIVE EVAL] {case.id} failed: {exc}")
+            errors.append({"case_id": case.id, "error": str(exc)})
+            case_results.append({
+                "case_id": case.id,
+                "expected_tools": case.expected_tools,
+                "is_complex": case.is_complex,
+                "passed": False,
+                "trajectory_pass": False,
+                "outcome_pass": False,
+                "tool_choice_correct": False,
+                "args_valid": False,
+                "tools_called": [],
+                "step_count": 0,
+                "latency_ms": 0.0,
+                "final_answer": "",
+                "error": str(exc),
+            })
+
+    elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
+    n = len(case_results)
+
+    def _rate(key: str) -> float:
+        return round(sum(1 for r in case_results if r.get(key)) / n, 3) if n else 0.0
+
+    return {
+        "eval_type": "live",
+        "total_cases": n,
+        "eval_runtime_ms": elapsed_ms,
+        "aggregate": {
+            "overall_pass_rate":     _rate("passed"),
+            "trajectory_pass_rate":  _rate("trajectory_pass"),
+            "outcome_pass_rate":     _rate("outcome_pass"),
+            "tool_choice_accuracy":  _rate("tool_choice_correct"),
+            "arg_validity_rate":     _rate("args_valid"),
+            "mean_latency_ms":       round(
+                sum(r.get("latency_ms", 0) for r in case_results) / n, 1
+            ) if n else 0.0,
+        },
+        "cases": case_results,
+        "errors": errors,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 11. Entrypoint
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":

@@ -1,0 +1,178 @@
+{
+  "architecture_statement": "LLM call happens in the Agent/Host; MCP server does not call the LLM.",
+  "protocol": "Model Context Protocol (MCP) JSON-RPC 2.0",
+  "transport": "HTTP / Server-Sent Events (SSE)",
+  "conversations": [
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2024-11-05",
+          "capabilities": {
+            "tools": {},
+            "resources": {},
+            "prompts": {}
+          },
+          "clientInfo": {
+            "name": "rag-agent-host",
+            "version": "1.0.0"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+          "protocolVersion": "2024-11-05",
+          "capabilities": {
+            "tools": {},
+            "resources": {},
+            "prompts": {}
+          },
+          "serverInfo": {
+            "name": "TicketHistoryServer",
+            "version": "4.0.5"
+          },
+          "instructions": "This MCP server exposes ticket details and escalation history tools. The LLM that calls these tools runs in the Host/Agent; this server never calls any LLM."
+        }
+      },
+      "field_annotations": {
+        "jsonrpc": "Protocol specification identifier. Always exactly '2.0'.",
+        "id": "Request identifier echoed back by the server to correlate async request/response.",
+        "method": "RPC method to invoke ('initialize' establishes session & protocol negotiation).",
+        "params": "Parameters supplied by host (protocolVersion, capabilities, clientInfo).",
+        "result": "Server capability declaration and metadata payload upon successful initialization."
+      },
+      "architecture_note": "LLM call happens in the Agent/Host; MCP server does not call the LLM."
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {}
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "result": {
+          "tools": [
+            {
+              "name": "get_ticket",
+              "description": "Retrieve the current status, priority, subject, and resolution notes for a support ticket.\n\nUse this tool when:\n- The user asks about a ticket's current state (e.g. 'What is the status of TCK-4471?').\n- You need the ticket subject, category, or resolution notes before fetching history.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "ticket_id": {
+                    "type": "string",
+                    "description": "Ticket identifier in the format TCK-NNNN (e.g. TCK-4471).\n       Do NOT pass raw numbers like '4471'; always include the 'TCK-' prefix."
+                  }
+                },
+                "required": [
+                  "ticket_id"
+                ]
+              }
+            },
+            {
+              "name": "get_escalation_history",
+              "description": "Retrieve the full chronological escalation and action history for a ticket.\n\nUse this tool when:\n- The user asks what happened with a ticket, who handled it, or how it was resolved.\n- You need the audit trail of agents, supervisors, or automated actions taken.",
+              "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "ticket_id": {
+                    "type": "string",
+                    "description": "Ticket identifier in the format TCK-NNNN (e.g. TCK-4471).\n       Do NOT pass raw numbers like '4471'; always include the 'TCK-' prefix."
+                  }
+                },
+                "required": [
+                  "ticket_id"
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "field_annotations": {
+        "jsonrpc": "Protocol specification identifier. Always exactly '2.0'.",
+        "id": "Sequential integer request/response ID.",
+        "method": "Operation 'tools/list' dynamically retrieves all available tools and schemas.",
+        "params": "Optional pagination or filtering parameters.",
+        "result.tools": "Array of tool definitions containing name, description, and JSON schema."
+      },
+      "architecture_note": "LLM call happens in the Agent/Host; MCP server does not call the LLM."
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+          "name": "get_escalation_history",
+          "arguments": {
+            "ticket_id": "TCK-1004"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"found\":true,\"ticket_id\":\"TCK-1004\",\"event_count\":4,\"history\":[{\"timestamp\":\"2024-02-10T08:35:00\",\"actor\":\"L1-Agent-Sarah\",\"action\":\"opened\",\"note\":\"Ticket received from customer portal regarding account suspension and tax invoice urgency.\"},{\"timestamp\":\"2024-02-10T10:15:00\",\"actor\":\"L1-Agent-Sarah\",\"action\":\"escalated\",\"note\":\"Escalated to Tier-2 Billing: L1 lacks authority to override suspended account security block.\"},{\"timestamp\":\"2024-02-10T13:40:00\",\"actor\":\"L2-Supervisor-Marcus\",\"action\":\"approved_override\",\"note\":\"Supervisor Marcus verified customer tax registration and approved temporary read-only invoice access.\"},{\"timestamp\":\"2024-02-10T15:00:00\",\"actor\":\"billing-bot\",\"action\":\"resolved\",\"note\":\"Sent secure 1-time link for past tax invoices. Customer confirmed successful download.\"}]}"
+            }
+          ],
+          "isError": false
+        }
+      },
+      "field_annotations": {
+        "jsonrpc": "Protocol specification identifier. Always exactly '2.0'.",
+        "id": "Sequential integer request/response ID.",
+        "method": "Execution command 'tools/call' directing server to run a specific tool.",
+        "params.name": "Tool identifier selected by the Host's LLM.",
+        "params.arguments": "Dictionary of arguments passed into the tool implementation.",
+        "result.content": "List of multi-modal output parts (text, image, resource) returned.",
+        "result.isError": "Boolean indicating whether tool execution encountered a fatal failure."
+      },
+      "architecture_note": "LLM call happens in the Agent/Host; MCP server does not call the LLM."
+    },
+    {
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+          "name": "get_ticket",
+          "arguments": {
+            "ticket_id": "TCK-9999"
+          }
+        }
+      },
+      "response": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"found\":false,\"error\":\"TICKET_NOT_FOUND\",\"ticket_id\":\"TCK-9999\",\"message\":\"Ticket TCK-9999 was not found. IDs should look like TCK-nnnn (e.g. TCK-4471). Please ask the customer to verify their ticket number.\"}"
+            }
+          ],
+          "isError": false
+        }
+      },
+      "field_annotations": {
+        "jsonrpc": "Protocol specification identifier. Always exactly '2.0'.",
+        "id": "Request/response correlation ID.",
+        "method": "'tools/call' invoking get_ticket with non-existent ID.",
+        "result.content": "Application-level structured error response enabling LLM self-correction."
+      },
+      "architecture_note": "LLM call happens in the Agent/Host; MCP server does not call the LLM."
+    }
+  ]
+}

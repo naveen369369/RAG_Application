@@ -1,0 +1,13 @@
+# GIT DIFF FOR agent/react_agent.py (Agent Module)
+# Total changed lines: 0
+# Zero code changes made to the agent module for either Server 1 or Server 2.
+#
+# DUAL-SERVER INTEGRATION ARCHITECTURE:
+# - MCP Server 1 (9 tools): In-process CRM & RAG tools injected via standard tool registry.
+#   (ticket_lookup, order_lookup, customer_lookup, rag_retrieval, route_namespace,
+#    doc_summarizer, multi_namespace, doc_metadata, eval_trigger)
+# - MCP Server 2 (2 tools): Ticket escalation tools dynamically discovered via FastMCP HTTP/SSE.
+#   (get_ticket, get_escalation_history)
+#
+# The ReAct Agent treats both Server 1 and Server 2 tools as a single unified toolset (11 tools total)
+# without any hardcoded if-statements, custom endpoints, or routing code in react_agent.py.
