@@ -79,7 +79,8 @@ TICKET_CASES: List[TicketCase] = [
         customer_id="C001",
         expected_tools=["ticket_lookup", "rag_retrieval"],
         alt_tools=[["order_lookup", "rag_retrieval"]],
-        expected_outcome_keywords=["headphones", "opened", "return", "policy", "refund"],
+        # Policy: opened electronics NOT eligible unless defective. No restocking fee exists.
+        expected_outcome_keywords=["not eligible", "unopened", "defective"],
         is_complex=True,
         required_steps=2,
     ),
@@ -207,6 +208,25 @@ TICKET_CASES: List[TicketCase] = [
         is_complex=False,
         required_steps=1,
     ),
+    # ── Week-11 regression case: refund policy hallucination ──────────────
+    # T01 produced "15% restocking fee" which does not exist in Hr-3.md.
+    # This case directly tests that the model does NOT invent a restocking fee
+    # and correctly refuses the return for opened, non-defective electronics.
+    TicketCase(
+        id="T11",
+        question=(
+            "I opened my headphones two days ago and they are uncomfortable. "
+            "I was told I can return them with a 15 percent restocking fee. "
+            "Is that correct, and can I get a refund on order ORD-1001?"
+        ),
+        customer_id="C001",
+        expected_tools=["rag_retrieval"],
+        alt_tools=[["ticket_lookup", "rag_retrieval"]],
+        # Must state ineligibility for opened non-defective electronics; must NOT confirm a fee.
+        expected_outcome_keywords=["not eligible", "unopened", "defective"],
+        is_complex=False,
+        required_steps=1,
+    ),
 ]
 
 
@@ -235,13 +255,16 @@ class MockTrajectoryResult:
 
 # Deterministic benchmark trajectories — "before mitigation"
 _MOCK_BEFORE: Dict[str, MockTrajectoryResult] = {
+    # T01: FAIL — answer fabricates "15% restocking fee" not present in Hr-3.md.
+    # Policy requires electronics to be unopened or defective; no restocking fee exists.
     "T01": MockTrajectoryResult(
         "T01",
         actual_tools=["ticket_lookup", "rag_retrieval"],
         actual_args={"ticket_id": "TCK-1001"},
         outcome_answer="Ticket #TCK-1001 details show opened headphones for order ORD-1001. Under our 30-day policy, opened items in good condition qualify for return with 15% restocking fee.",
         latency_ms=620, input_tokens=450, output_tokens=110,
-        outcome_pass=True,
+        outcome_pass=False,   # FAIL: fabricated restocking fee; opened electronics not eligible
+        failure_mode="policy_hallucination",
     ),
     "T02": MockTrajectoryResult(
         "T02",
@@ -321,10 +344,54 @@ _MOCK_BEFORE: Dict[str, MockTrajectoryResult] = {
         latency_ms=520, input_tokens=400, output_tokens=110,
         outcome_pass=True,
     ),
+    # T11 BEFORE: agent echoes the caller's fabricated "15% restocking fee" claim
+    # instead of checking policy. outcome_pass=False — confirms non-existent fee.
+    "T11": MockTrajectoryResult(
+        "T11",
+        actual_tools=["rag_retrieval"],
+        actual_args={"query": "electronics return restocking fee opened headphones"},
+        outcome_answer="Yes, opened electronics can be returned within 30 days with a 15% restocking fee applied to your refund for order ORD-1001.",
+        latency_ms=410, input_tokens=340, output_tokens=88,
+        outcome_pass=False,   # FAIL: confirms non-existent restocking fee; fabricated policy
+        failure_mode="policy_hallucination",
+    ),
 }
 
-# After mitigation: argument_fabrication cases are fixed by strict SQL validation
+# After mitigation: argument_fabrication cases fixed + policy_hallucination suppressed
+# via updated RAG_SYSTEM_PROMPT (v1.2) that explicitly forbids inventing fees/policies.
 _MOCK_AFTER: Dict[str, MockTrajectoryResult] = dict(_MOCK_BEFORE)
+
+# T01 AFTER: correct policy answer — opened non-defective electronics not eligible.
+_MOCK_AFTER["T01"] = MockTrajectoryResult(
+    "T01",
+    actual_tools=["ticket_lookup", "rag_retrieval"],
+    actual_args={"ticket_id": "TCK-1001"},
+    outcome_answer=(
+        "Ticket #TCK-1001 (opened headphones, ORD-1001). Per our Electronics return policy, "
+        "items must be unopened or verified defective to be eligible for return. "
+        "Opened headphones that are not defective are not eligible for a refund. "
+        "There is no restocking fee — the item simply does not qualify for return."
+    ),
+    latency_ms=635, input_tokens=460, output_tokens=118,
+    outcome_pass=True,
+    failure_mode=None,
+)
+
+# T11 AFTER: correct policy answer — no restocking fee, opened electronics ineligible.
+_MOCK_AFTER["T11"] = MockTrajectoryResult(
+    "T11",
+    actual_tools=["rag_retrieval"],
+    actual_args={"query": "electronics return policy opened headphones defective"},
+    outcome_answer=(
+        "No, that is not correct. Our electronics return policy requires items to be unopened "
+        "or verified defective. Opened headphones that are not defective are not eligible for return. "
+        "There is no restocking fee in our policy — the item does not qualify for a refund."
+    ),
+    latency_ms=415, input_tokens=342, output_tokens=92,
+    outcome_pass=True,
+    failure_mode=None,
+)
+
 _MOCK_AFTER["T04"] = MockTrajectoryResult(
     "T04",
     actual_tools=["ticket_lookup", "customer_lookup", "rag_retrieval"],
@@ -488,13 +555,16 @@ def _run_on_mock(mock_data: Dict[str, MockTrajectoryResult]) -> EvalSummary:
 # ---------------------------------------------------------------------------
 
 MITIGATION = {
-    "name":        "argument_validation",
-    "description": "Validate customer_id format (^C\\d{3}$) before CRM lookup. "
-                   "Reject fabricated IDs with explicit error — forces agent to replan.",
-    "target_mode": "argument_fabrication",
-    "latency_overhead_ms": 12,    # regex check cost
-    "token_overhead":      0,     # no LLM call
-    "cost_overhead_usd":   0.0,
+    "name":        "argument_validation + prompt_v1.2",
+    "description": (
+        "1) Validate customer_id format (^C\\d{3}$) before CRM lookup — reject fabricated IDs. "
+        "2) RAG_SYSTEM_PROMPT v1.2 adds explicit instruction: NEVER state a fee, deadline, or "
+        "policy detail that is not present verbatim in the retrieved context."
+    ),
+    "target_modes": ["argument_fabrication", "policy_hallucination"],
+    "latency_overhead_ms": 12,    # regex check; prompt change is zero-latency
+    "token_overhead":      18,    # ~18 extra tokens in system prompt v1.2
+    "cost_overhead_usd":   round(18 * 0.0000003, 8),
 }
 
 

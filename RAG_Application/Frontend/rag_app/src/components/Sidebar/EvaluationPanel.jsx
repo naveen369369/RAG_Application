@@ -1,8 +1,8 @@
-import { BarChart3, GitBranch, Shield, ExternalLink, Users } from 'lucide-react'
+import { BarChart3, GitBranch, Shield, ExternalLink, Users, ClipboardList } from 'lucide-react'
 import { useAppContext } from '../../context/AppContext'
 
 export function EvaluationPanel() {
-  const { setEvalDrawerOpen, setTrajDrawerOpen, setSecDrawerOpen, setMultiAgentDrawerOpen } = useAppContext()
+  const { setEvalDrawerOpen, setTrajDrawerOpen, setSecDrawerOpen, setMultiAgentDrawerOpen, setWeek11DrawerOpen } = useAppContext()
 
   const buttons = [
     {
@@ -32,6 +32,13 @@ export function EvaluationPanel() {
       sub: 'Race table · handoffs · A2A · verdict',
       onClick: () => setMultiAgentDrawerOpen(true),
       colors: 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700',
+    },
+    {
+      icon: <ClipboardList className="w-4 h-4 text-amber-600" />,
+      label: 'Week-11 Refund Audit',
+      sub: 'Drill · trace · suite · cost · 10× · regression',
+      onClick: () => setWeek11DrawerOpen(true),
+      colors: 'bg-amber-50 hover:bg-amber-100 border-amber-200 text-amber-700',
     },
   ]
 

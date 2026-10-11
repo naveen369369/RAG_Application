@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 
 
 # Default system prompt for the RAG assistant
+# prompt_version: v1.2
+# v1.0 → v1.1: added scope limitation (Week-3)
+# v1.1 → v1.2: added policy-hallucination guard — Week-11 regression fix for T01/T11
+#   Root cause: agent echoed caller's fabricated "15% restocking fee" not in Hr-3.md.
+#   Fix: explicit prohibition on confirming any fee, percentage, or deadline
+#        that is not present verbatim in the retrieved context.
+PROMPT_VERSION = "v1.2"
+
 RAG_SYSTEM_PROMPT = """You are a dedicated Customer Support and Documentation Assistant.
 You answer user questions based strictly on the provided documentation context.
 If the answer cannot be found in the context, or if the question is unrelated to the provided documents, clearly state that you cannot answer.
@@ -33,6 +41,7 @@ CRITICAL INSTRUCTIONS:
 - NEVER use external knowledge to solve math or answer out-of-domain questions.
 - You MUST answer using ONLY the facts, policies, specific numeric values, deadlines, fees, and conditions from the provided context.
 - NEVER add assumptions or make up information.
+- POLICY HALLUCINATION GUARD: NEVER confirm, repeat, or validate any fee percentage, deadline, or specific policy detail that a customer mentions in their question unless that exact detail appears verbatim in the retrieved context. If a customer says "I heard there is a 15% restocking fee" — do NOT confirm this unless that fee is explicitly stated in the context. If it is not in the context, state clearly that the policy does not include that detail.
 """
 
 

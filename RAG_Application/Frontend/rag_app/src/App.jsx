@@ -11,6 +11,7 @@ import TrajectoryEvalDrawer from './components/AgentEval/TrajectoryEvalDrawer'
 import SecurityTestDrawer from './components/AgentEval/SecurityTestDrawer'
 import TicketsDrawer from './components/Tickets/TicketsDrawer'
 import MultiAgentEvalDrawer from './components/AgentEval/MultiAgentEvalDrawer'
+import Week11AuditDrawer from './components/AgentEval/Week11AuditDrawer'
 
 const SIDEBAR_MIN = 220
 const SIDEBAR_MAX = 520
@@ -80,6 +81,7 @@ function RAGApp() {
       <TrajectoryEvalDrawer />
       <SecurityTestDrawer />
       <MultiAgentEvalDrawer />
+      <Week11AuditDrawer />
       {/* Mobile overlay backdrop */}
       {sidebarOpen && (
         <div

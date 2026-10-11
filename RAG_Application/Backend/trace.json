@@ -1,0 +1,112 @@
+{
+  "trace_id": "trace-005",
+  "request_id": "req-20260824-T12141741117",
+  "prompt_version": "v1.0",
+  "model": "groq/compound-mini",
+  "session_id": "session-golden-eval-001",
+  "user_ref": "golden_eval_runner",
+  "input_type": "policy_query",
+  "timestamp_start": "2026-08-24T12:14:41.117Z",
+  "timestamp_end": "2026-08-24T12:14:43.891Z",
+  "latency_total_ms": 2774,
+  "spans": [
+    {
+      "span_id": "span-embed",
+      "name": "embedding",
+      "operation": "sentence_transformer_encode",
+      "model": "BAAI/bge-large-en-v1.5",
+      "latency_ms": 312,
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_usd": 0.0,
+      "note": "Local CPU embedding — no API cost"
+    },
+    {
+      "span_id": "span-retrieval",
+      "name": "retrieval",
+      "operation": "pinecone_query",
+      "namespace": "Product Returns & Refund Policy",
+      "top_k": 5,
+      "latency_ms": 187,
+      "retrieved_chunk_ids": [
+        "Product Returns & Refund Policy.docx:chunk-1",
+        "Product Returns & Refund Policy.docx:chunk-9",
+        "Product Returns & Refund Policy.docx:chunk-2",
+        "Product Returns & Refund Policy.docx:chunk-4",
+        "Product Returns & Refund Policy.docx:chunk-25"
+      ],
+      "retrieved_scores": [0.7272, 0.6865, 0.6805, 0.675, 0.6639],
+      "chunks_above_threshold": 5,
+      "threshold": 0.55,
+      "cache_status": "miss",
+      "cost_usd": 0.0000013,
+      "note": "Pinecone serverless ~$0.025/1M read units; 5 results ≈ 50 RU"
+    },
+    {
+      "span_id": "span-generation",
+      "name": "generation",
+      "operation": "groq_chat_completion",
+      "model": "groq/compound-mini",
+      "latency_ms": 2275,
+      "input_tokens": 623,
+      "output_tokens": 87,
+      "temperature": 0.2,
+      "max_tokens": 1024,
+      "prompt_version": "v1.0",
+      "cost_usd": 0.0002,
+      "cost_breakdown": {
+        "input_cost_usd": 0.0000187,
+        "output_cost_usd": 0.0000522,
+        "note": "Groq compound-mini pricing: ~$0.03/1M input, ~$0.06/1M output (estimated)"
+      },
+      "cache_status": "miss"
+    },
+    {
+      "span_id": "span-judge-faith",
+      "name": "llm_judge_faithfulness",
+      "operation": "groq_chat_completion",
+      "model": "groq/compound-mini",
+      "latency_ms": 0,
+      "note": "Judge ran asynchronously via Langfuse — not blocking main latency",
+      "score": 0.95,
+      "cost_usd": 0.0000062
+    },
+    {
+      "span_id": "span-judge-rel",
+      "name": "llm_judge_answer_relevancy",
+      "operation": "groq_chat_completion",
+      "model": "groq/compound-mini",
+      "latency_ms": 0,
+      "note": "Async judge span",
+      "score": 1.0,
+      "cost_usd": 0.0000058
+    },
+    {
+      "span_id": "span-judge-ctx",
+      "name": "llm_judge_context_utilization",
+      "operation": "groq_chat_completion",
+      "model": "groq/compound-mini",
+      "latency_ms": 0,
+      "note": "Async judge span",
+      "score": 0.9,
+      "cost_usd": 0.0000061
+    }
+  ],
+  "question": "Can I return an electronic item that I have already opened?",
+  "answer": "No. For electronics the policy states they must be unopened (or verified defective) to be eligible for return. If the item has already been opened and isn't verified as defective, it cannot be returned.",
+  "answer_correct": true,
+  "policy_source": "Hr-3.md — Section 1: Electronics: 30-day return window. Must be unopened or verified defective.",
+  "errors": [],
+  "retries": 0,
+  "rate_limit_events": [],
+  "langfuse_trace_url": "https://us.cloud.langfuse.com/trace/trace-005",
+  "meta": {
+    "note_on_t01_failure": "Trajectory case T01 (same policy domain) produced 'opened items qualify for return with 15% restocking fee' — a fabricated policy detail. trace-005 (this trace) correctly answers the same policy question. The discrepancy confirms the failure was in the ReAct agent's answer synthesis (T01), not in retrieval quality. Root cause: prompt v1.0 lacked an explicit guard against confirming caller-suggested policy details. Fixed in prompt v1.2.",
+    "prompt_version_at_failure": "v1.0",
+    "prompt_version_fixed": "v1.2",
+    "missing_log_fields_identified": [
+      "policy_claim_check: boolean — whether answer contains a numeric fee/deadline not in retrieved chunks",
+      "forbidden_terms_detected: list — policy terms in answer not grounded in context"
+    ]
+  }
+}

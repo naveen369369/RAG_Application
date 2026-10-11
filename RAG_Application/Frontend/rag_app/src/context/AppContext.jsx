@@ -27,6 +27,7 @@ export function AppProvider({ children }) {
   const [ticketsDrawerOpen, setTicketsDrawerOpen] = useState(false)
   const [ticketsDrawerTab, setTicketsDrawerTab] = useState('tickets')
   const [multiAgentDrawerOpen, setMultiAgentDrawerOpen] = useState(false)
+  const [week11DrawerOpen, setWeek11DrawerOpen] = useState(false)
 
   return (
     <AppContext.Provider value={{
@@ -45,6 +46,7 @@ export function AppProvider({ children }) {
       ticketsDrawerOpen, setTicketsDrawerOpen,
       ticketsDrawerTab, setTicketsDrawerTab,
       multiAgentDrawerOpen, setMultiAgentDrawerOpen,
+      week11DrawerOpen, setWeek11DrawerOpen,
     }}>
       {children}
     </AppContext.Provider>
