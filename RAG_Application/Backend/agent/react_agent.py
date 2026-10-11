@@ -67,17 +67,26 @@ Final Answer: <direct answer based only on tool result>
 
 TOOLS:
 - rag_retrieval — for ALL questions about policies, shipping, returns, billing, refunds, accounts.
+- list_tickets_and_orders — ONLY if asked to list all tickets, list all orders, or view database records.
 - doc_metadata / doc_summarizer — ONLY if asked "what topics do you cover?" or "what files exist?".
+- Do NOT call database_schema or db_query for policy questions.
 
 Never invent facts. Always end with Final Answer.
 """
 
 REACT_SYSTEM_PROMPT_COMPLEX = """You are a customer support agent. Answer questions using ONLY the information returned by your tools.
 
-QUESTION TYPE: Complex (may require customer context, ticket status, order details, or policy lookup)
+QUESTION TYPE: Complex (may require customer context, ticket status, order details, policy lookup, or database schema/query)
 
 RULES:
 - STRICT SCOPE: You are exclusively a customer support agent. If asked math calculations (e.g. 2+2, arithmetic, equations), coding, riddles, or unrelated general knowledge, immediately output Final Answer refusing to answer: "I am a customer support assistant and can only help with our products, orders, shipping, returns, billing, and account support. I cannot assist with math calculations or unrelated questions."
+- RELATIONAL / DATABASE QUESTIONS: If the question requires querying relational data across tables, database structure, aggregations, counts, or joins (e.g., 'Which customer has the most tickets?', 'What is the average order total per customer?', 'What tables exist in the database?'):
+  1. Call database_schema FIRST to understand tables, columns, primary/foreign keys, and relationships.
+  2. Generate a valid SQL SELECT query based strictly on the retrieved schema.
+  3. Call db_query with the SQL query to execute it and get real data.
+  4. Immediately formulate your Final Answer based on the query results. Do NOT call rag_retrieval for purely database/relational questions.
+- NON-DATABASE QUESTIONS: For questions about return policy, shipping timelines, warranties, or general policies, call rag_retrieval. Do NOT call database_schema for general policy questions.
+- LISTING TICKETS AND ORDERS: If the question asks to list, show, or retrieve all tickets, orders, or database records (e.g., 'list out the all the ticket and orders', 'show all tickets') → call list_tickets_and_orders FIRST to fetch all records from the database.
 - TICKET INQUIRIES: If the question mentions a ticket ID (e.g., TCK-1001, T01, etc.) → call ticket_lookup FIRST to fetch the ticket status, priority, and linked order.
 - ORDER INQUIRIES: If the question mentions an order ID (e.g., ORD-1001) → call order_lookup FIRST to inspect order status, tracking, and item condition.
 - ESCALATION / CUSTOMER CONTEXT: If the question involves escalation, customer tier, or priority handling → call customer_lookup to get tier (basic/premium/vip) and SLA.
@@ -86,13 +95,16 @@ RULES:
 - If info is insufficient after 2 tools, give the best answer you can and recommend contacting support.
 
 RESPONSE FORMAT:
-Thought: <what do I need to look up — ticket, order, customer context, or policy?>
-[call ticket_lookup / order_lookup / customer_lookup / rag_retrieval]
+Thought: <what do I need to look up — schema/SQL query, tickets/orders list, ticket, order, customer context, or policy?>
+[call database_schema / db_query / list_tickets_and_orders / ticket_lookup / order_lookup / customer_lookup / rag_retrieval]
 Thought: <what policy or next step applies?>
-[call rag_retrieval if policy details needed]
+[call db_query or rag_retrieval if needed]
 Final Answer: <direct, personalized answer combining DB facts + policy rules>
 
 TOOLS:
+- database_schema — dynamically inspect tables, columns, data types, primary keys, foreign keys, relationships, and constraints.
+- db_query        — execute read-only SQL SELECT queries against the database to get relational answers.
+- list_tickets_and_orders — retrieve all support tickets and/or orders from the database.
 - ticket_lookup   — get live support ticket subject, status, priority, customer tier, and linked order.
 - order_lookup    — get live order shipment status, carrier, tracking number, and item condition.
 - customer_lookup — get customer tier (basic/premium/vip), account status, escalation policy.
@@ -156,6 +168,25 @@ def _classify_question(question: str, pipeline: "RAGPipeline") -> Dict[str, Any]
     Uses a fast LLM call with temperature=0 for deterministic output.
     Falls back to {"complexity": "simple", "namespace": "all"} on any error.
     """
+    # Fast-path check: queries asking to list all tickets and/or orders
+    q_lower = question.lower()
+    if any(w in q_lower for w in ["list", "show all", "get all", "all tickets", "all orders", "view all", "tickets and orders"]) and any(w in q_lower for w in ["ticket", "order"]):
+        return {
+            "complexity": "complex",
+            "namespace": "all",
+            "needs_customer_context": False,
+            "rewritten_query": question,
+        }
+
+    # Fast-path check: queries asking about database schema or relational questions across tables
+    if any(w in q_lower for w in ["schema", "database tables", "what tables", "table relationship", "relational", "most tickets", "most orders", "highest total", "average order", "count of tickets", "join", "foreign key", "which customer has the most", "database structure"]):
+        return {
+            "complexity": "complex",
+            "namespace": "all",
+            "needs_customer_context": False,
+            "rewritten_query": question,
+        }
+
     try:
         namespaces = pipeline.get_namespaces() if hasattr(pipeline, "get_namespaces") else []
         ns_list = ", ".join(namespaces) if namespaces else "all"
@@ -175,7 +206,7 @@ Respond with valid JSON only:
 }}
 
 Rules:
-- complexity=complex if the question involves: a ticket ID (e.g. TCK-..., T01), an order ID (e.g. ORD-...), escalation, customer tier, premium/VIP treatment, account suspension, or multi-step dependency.
+- complexity=complex if the question involves: listing tickets or orders, a ticket ID (e.g. TCK-..., T01), an order ID (e.g. ORD-...), escalation, customer tier, premium/VIP treatment, account suspension, or multi-step dependency.
 - needs_customer_context=true if the question mentions a customer, order, ticket, or if knowing customer tier/account changes the answer.
 - rewritten_query: make the query specific and document-search friendly (e.g., "refund policy damaged items" not "I want my money back").
 """
@@ -425,6 +456,17 @@ def stream_agent(
         system_prompt += f"\n\n[ROUTING HINT] Best namespace for this question: '{best_namespace}'. Pass this as the namespace arg to rag_retrieval."
     if needs_customer:
         system_prompt += f"\n[ROUTING HINT] Call customer_lookup(customer_id='{customer_id}') FIRST to get customer tier before retrieving policy."
+    q_lower = question.lower()
+    if any(w in q_lower for w in ["list", "show all", "get all", "all tickets", "all orders", "view all", "tickets and orders"]) and any(w in q_lower for w in ["ticket", "order"]):
+        system_prompt += "\n[ROUTING HINT] The user explicitly asks to list tickets and/or orders. Call list_tickets_and_orders() immediately to retrieve all records from the database and present them clearly."
+    elif any(w in q_lower for w in ["schema", "database tables", "what tables", "table relationship", "relational", "most tickets", "most orders", "highest total", "average order", "count of tickets", "which customer has the most", "database structure", "database question"]):
+        system_prompt += (
+            "\n[ROUTING HINT] This is a relational/database question. Follow this required flow:"
+            "\n1. Call database_schema() FIRST to dynamically inspect the tables, columns, and foreign keys."
+            "\n2. Write a SQL SELECT query based strictly on the retrieved schema."
+            "\n3. Call db_query(query=...) to execute the SQL query."
+            "\n4. Formulate the Final Answer based on the query results."
+        )
 
     # ── Build initial messages ─────────────────────────────────────────────
     messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
@@ -678,7 +720,7 @@ def stream_agent(
         _lf_trace.score(name="tokens_used", value=float(tokens_used))
 
     # ── LLM-as-Judge: score faithfulness, relevancy, context_utilization ──
-    if is_enabled() and all_context_chunks and final_answer and not budget_hit:
+    if is_enabled() and all_context_chunks and final_answer and not budget_hit and not (session_id and session_id.startswith("eval-")):
         try:
             from eval.llm_judge import LLMJudge
             judge = LLMJudge(groq_client=pipeline.llm.client)

@@ -17,6 +17,7 @@ export function AppProvider({ children }) {
   const [useHyde, setUseHyde] = useState(false)
   const [useReranker, setUseReranker] = useState(false)
   const [agentMode, setAgentMode] = useState(false)
+  const [agentArchitecture, setAgentArchitecture] = useState('single') // 'single' | 'multi'
   const [sessionId] = useState(() => getOrCreateSessionId())
   const [raceDrawerOpen, setRaceDrawerOpen] = useState(false)
   const [evalDrawerOpen, setEvalDrawerOpen] = useState(false)
@@ -25,6 +26,7 @@ export function AppProvider({ children }) {
   const [secDrawerOpen, setSecDrawerOpen] = useState(false)
   const [ticketsDrawerOpen, setTicketsDrawerOpen] = useState(false)
   const [ticketsDrawerTab, setTicketsDrawerTab] = useState('tickets')
+  const [multiAgentDrawerOpen, setMultiAgentDrawerOpen] = useState(false)
 
   return (
     <AppContext.Provider value={{
@@ -33,6 +35,7 @@ export function AppProvider({ children }) {
       useHyde, setUseHyde,
       useReranker, setUseReranker,
       agentMode, setAgentMode,
+      agentArchitecture, setAgentArchitecture,
       sessionId,
       raceDrawerOpen, setRaceDrawerOpen,
       evalDrawerOpen, setEvalDrawerOpen,
@@ -41,6 +44,7 @@ export function AppProvider({ children }) {
       secDrawerOpen, setSecDrawerOpen,
       ticketsDrawerOpen, setTicketsDrawerOpen,
       ticketsDrawerTab, setTicketsDrawerTab,
+      multiAgentDrawerOpen, setMultiAgentDrawerOpen,
     }}>
       {children}
     </AppContext.Provider>

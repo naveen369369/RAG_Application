@@ -40,7 +40,7 @@ _GREETING_PATTERNS = re.compile(
 _OFF_TOPIC_PATTERNS = re.compile(
     r"\b("
     r"(write|create|generate|debug)\s+.*?\b(code|program|script|function|class|algorithm|poem|essay|story|joke|riddle)|"
-    r"python|javascript|typescript|c\+\+|java\s+code|sql\s+query|html|css|"
+    r"python|javascript|typescript|c\+\+|java\s+code|html|css|"
     r"tell\s+me\s+a\s+(joke|story|poem|riddle)|sing\s+(a\s+)?song|"
     r"who\s+is\s+the\s+president|what\s+is\s+the\s+capital|weather\s+(in|today|forecast)|"
     r"stock\s+price|latest\s+news|recipe\s+for|sports\s+score|movie\s+review|who\s+won\s+the|"

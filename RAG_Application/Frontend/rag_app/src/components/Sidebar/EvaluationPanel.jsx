@@ -1,8 +1,8 @@
-import { BarChart3, GitBranch, Shield, ExternalLink } from 'lucide-react'
+import { BarChart3, GitBranch, Shield, ExternalLink, Users } from 'lucide-react'
 import { useAppContext } from '../../context/AppContext'
 
 export function EvaluationPanel() {
-  const { setEvalDrawerOpen, setTrajDrawerOpen, setSecDrawerOpen } = useAppContext()
+  const { setEvalDrawerOpen, setTrajDrawerOpen, setSecDrawerOpen, setMultiAgentDrawerOpen } = useAppContext()
 
   const buttons = [
     {
@@ -25,6 +25,13 @@ export function EvaluationPanel() {
       sub: 'Injection · sandboxing · OWASP',
       onClick: () => setSecDrawerOpen(true),
       colors: 'bg-rose-50 hover:bg-rose-100 border-rose-200 text-rose-700',
+    },
+    {
+      icon: <Users className="w-4 h-4 text-indigo-500" />,
+      label: 'Single vs Multi-Agent Race',
+      sub: 'Race table · handoffs · A2A · verdict',
+      onClick: () => setMultiAgentDrawerOpen(true),
+      colors: 'bg-indigo-50 hover:bg-indigo-100 border-indigo-200 text-indigo-700',
     },
   ]
 

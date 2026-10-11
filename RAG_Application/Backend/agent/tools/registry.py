@@ -12,7 +12,8 @@ from agent.tools.multi_namespace import make_multi_namespace_tool
 from agent.tools.doc_metadata import make_doc_metadata_tool
 from agent.tools.eval_trigger import make_eval_trigger_tool
 from agent.tools.customer_lookup import make_customer_lookup_tool
-from agent.tools.ticket_tools import make_ticket_lookup_tool, make_order_lookup_tool
+from agent.tools.ticket_tools import make_ticket_lookup_tool, make_order_lookup_tool, make_list_tickets_and_orders_tool
+from agent.tools.database_tools import make_database_schema_tool, make_db_query_tool
 
 if TYPE_CHECKING:
     from rag.rag_pipeline import RAGPipeline
@@ -25,21 +26,27 @@ def build_agent_tools(pipeline: "RAGPipeline") -> List[BaseTool]:
     Tools available to the ReAct agent.
 
     Priority order (LLM uses tool descriptions to decide):
-      1. ticket_lookup    — get real support ticket details, subject, status, linked order
-      2. order_lookup     — get real order details, shipping carrier, item conditions
-      3. customer_lookup  — get customer tier/status for escalation/personalisation
-      4. rag_retrieval    — primary document search (hybrid dense + BM25)
-      5. route_namespace  — pick the best document namespace
-      6. multi_namespace  — cross-namespace search for broad questions
-      7. doc_summarizer   — summarise all content in a namespace
-      8. doc_metadata     — list available documents/topics
-      9. eval_trigger     — run retrieval quality evaluation (admin/testing)
-     10. get_ticket             [MCP Server 2] — live ticket status & priority
-     11. get_escalation_history [MCP Server 2] — full audit trail for a ticket
+      1. database_schema         — dynamically inspect database tables, columns, PKs, FKs, constraints
+      2. db_query                — execute read-only SQL SELECT queries against the database
+      3. ticket_lookup           — get real support ticket details, subject, status, linked order
+      4. order_lookup            — get real order details, shipping carrier, item conditions
+      5. list_tickets_and_orders — retrieve all support tickets and/or orders from DB
+      6. customer_lookup         — get customer tier/status for escalation/personalisation
+      7. rag_retrieval           — primary document search (hybrid dense + BM25)
+      8. route_namespace         — pick the best document namespace
+      9. multi_namespace         — cross-namespace search for broad questions
+     10. doc_summarizer          — summarise all content in a namespace
+     11. doc_metadata            — list available documents/topics
+     12. eval_trigger            — run retrieval quality evaluation (admin/testing)
+     13. get_ticket             [MCP Server 2] — live ticket status & priority
+     14. get_escalation_history [MCP Server 2] — full audit trail for a ticket
     """
     tools: List[BaseTool] = [
+        make_database_schema_tool(),             # dynamic schema inspector (tables, cols, PK/FKs, samples)
+        make_db_query_tool(),                    # safe read-only SQL SELECT query tool
         make_ticket_lookup_tool(),               # real ticket lookup from DB
         make_order_lookup_tool(),                # real order lookup from DB
+        make_list_tickets_and_orders_tool(),     # retrieve all tickets and orders from DB
         make_customer_lookup_tool(),             # customer CRM context + escalation tier
         make_rag_retrieval_tool(pipeline),       # search documents (hybrid search)
         make_namespace_router_tool(pipeline),    # pick the right document category

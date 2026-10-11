@@ -10,13 +10,14 @@ import DocumentStudioModal from './components/Sidebar/DocumentStudioModal'
 import TrajectoryEvalDrawer from './components/AgentEval/TrajectoryEvalDrawer'
 import SecurityTestDrawer from './components/AgentEval/SecurityTestDrawer'
 import TicketsDrawer from './components/Tickets/TicketsDrawer'
+import MultiAgentEvalDrawer from './components/AgentEval/MultiAgentEvalDrawer'
 
 const SIDEBAR_MIN = 220
 const SIDEBAR_MAX = 520
 const SIDEBAR_DEFAULT = 300
 
 function RAGApp() {
-  const { namespace, showSources, useHyde, useReranker, agentMode, sessionId } = useAppContext()
+  const { namespace, showSources, useHyde, useReranker, agentMode, agentArchitecture, sessionId } = useAppContext()
   const { messages: chatMessages, streaming: chatStreaming, sendMessage: sendChat, clearMessages: clearChat } = useChat()
   const { messages: agentMessages, streaming: agentStreaming, sendMessage: sendAgent, clearMessages: clearAgent } = useAgent()
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -37,6 +38,7 @@ function RAGApp() {
         temperature: 0.2,
         return_sources: showSources,
         namespace,
+        _architecture: agentArchitecture,
       })
     } else {
       sendChat({
@@ -48,7 +50,7 @@ function RAGApp() {
         temperature: 0.2,
       })
     }
-  }, [agentMode, namespace, showSources, useHyde, useReranker, sessionId, sendAgent, sendChat])
+  }, [agentMode, agentArchitecture, namespace, showSources, useHyde, useReranker, sessionId, sendAgent, sendChat])
 
   const handleAskAboutTicket = useCallback((prompt, cid) => {
     sendAgent({
@@ -77,6 +79,7 @@ function RAGApp() {
       <DocumentStudioModal />
       <TrajectoryEvalDrawer />
       <SecurityTestDrawer />
+      <MultiAgentEvalDrawer />
       {/* Mobile overlay backdrop */}
       {sidebarOpen && (
         <div

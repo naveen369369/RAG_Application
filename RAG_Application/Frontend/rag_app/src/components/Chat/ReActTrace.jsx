@@ -1,6 +1,12 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronRight, Brain } from 'lucide-react'
 
+const AGENT_COLORS = {
+  triage_worker: 'bg-amber-100 text-amber-700',
+  policy_worker: 'bg-indigo-100 text-indigo-700',
+  agent: 'bg-violet-100 text-violet-700',
+}
+
 export default function ReActTrace({ thoughts = [] }) {
   const [open, setOpen] = useState(false)
   if (!thoughts.length) return null
@@ -18,10 +24,19 @@ export default function ReActTrace({ thoughts = [] }) {
 
       {open && (
         <div className="mt-1.5 space-y-1.5 border-l-2 border-slate-200 pl-3">
-          {thoughts.map((text, i) => {
+          {thoughts.map((thought, i) => {
+            // Support both string (single-agent) and {text, agent} (multi-agent)
+            const text = typeof thought === 'string' ? thought : (thought.text || '')
+            const agentLabel = typeof thought === 'object' ? thought.agent : null
             const isFinal = text.startsWith('Final Answer:')
             return (
               <div key={i} className="text-xs">
+                {/* Agent label badge (multi-agent only) */}
+                {agentLabel && agentLabel !== 'agent' && (
+                  <span className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded mr-1.5 mb-0.5 ${AGENT_COLORS[agentLabel] || 'bg-slate-100 text-slate-600'}`}>
+                    {agentLabel}
+                  </span>
+                )}
                 {text.split('\n').map((line, j) => {
                   if (line.startsWith('Thought:')) {
                     return (

@@ -41,8 +41,11 @@ MCP_SERVERS: List[Dict[str, Any]] = [
             "token": None,
         },
         "tools": [
+            "database_schema",
+            "db_query",
             "ticket_lookup",
             "order_lookup",
+            "list_tickets_and_orders",
             "customer_lookup",
             "rag_retrieval",
             "route_namespace",
@@ -52,7 +55,8 @@ MCP_SERVERS: List[Dict[str, Any]] = [
             "run_evaluation",
         ],
         "tool_categories": {
-            "CRM": ["ticket_lookup", "order_lookup", "customer_lookup"],
+            "Database & SQL": ["database_schema", "db_query"],
+            "CRM": ["ticket_lookup", "order_lookup", "list_tickets_and_orders", "customer_lookup"],
             "RAG / Documents": ["rag_retrieval", "route_namespace", "summarize_document", "multi_namespace_search", "inspect_documents"],
             "Admin": ["run_evaluation"],
         },

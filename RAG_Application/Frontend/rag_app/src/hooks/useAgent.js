@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
-import { streamAgent } from '../api/agent'
+import { streamAgent, streamMultiAgent, streamCrewAgent } from '../api/agent'
+
 
 function getOrCreateSessionId() {
   let id = sessionStorage.getItem('rag_session_id')
@@ -20,7 +21,46 @@ function applyAgentEvent(state, event) {
         ...state,
         messages: messages.map((m, i) =>
           i === messages.length - 1 && m.role === 'assistant'
-            ? { ...m, thoughts: [...(m.thoughts || []), event.text] }
+            ? { ...m, thoughts: [...(m.thoughts || []), { text: event.text, agent: event.agent || 'agent' }] }
+            : m
+        ),
+      }
+    case 'handoff':
+      return {
+        ...state,
+        messages: messages.map((m, i) =>
+          i === messages.length - 1 && m.role === 'assistant'
+            ? {
+                ...m,
+                handoffs: [
+                  ...(m.handoffs || []),
+                  {
+                    from: event.from_agent,
+                    to: event.to_agent,
+                    tokens: event.tokens_sent,
+                    purpose: event.purpose,
+                  },
+                ],
+              }
+            : m
+        ),
+      }
+    case 'triage_complete':
+      return {
+        ...state,
+        messages: messages.map((m, i) =>
+          i === messages.length - 1 && m.role === 'assistant'
+            ? {
+                ...m,
+                triage: {
+                  ticket_type: event.ticket_type,
+                  complexity: event.complexity,
+                  summary: event.summary,
+                  needs_order_lookup: event.needs_order_lookup,
+                  needs_customer_lookup: event.needs_customer_lookup,
+                  needs_policy_lookup: event.needs_policy_lookup,
+                },
+              }
             : m
         ),
       }
@@ -33,7 +73,7 @@ function applyAgentEvent(state, event) {
                 ...m,
                 toolCalls: [
                   ...(m.toolCalls || []),
-                  { tool: event.tool, args: event.args, result: null, status: 'running' },
+                  { tool: event.tool, args: event.args, result: null, status: 'running', agent: event.agent },
                 ],
               }
             : m
@@ -76,6 +116,25 @@ function applyAgentEvent(state, event) {
                 latency_ms: event.latency_ms,
                 tool_calls_made: event.tool_calls_made,
                 budget: event.budget,
+                orchestrator_latency_ms: event.orchestrator_latency_ms,
+              }
+            : m
+        ),
+      }
+    case 'orchestrator_done':
+      return {
+        ...state,
+        messages: messages.map((m, i) =>
+          i === messages.length - 1 && m.role === 'assistant'
+            ? {
+                ...m,
+                orchestratorDone: {
+                  latency_ms: event.latency_ms,
+                  handoff_count: event.handoff_count,
+                  triage_tokens: event.triage_tokens,
+                  policy_tokens: event.policy_tokens,
+                  ticket_type: event.ticket_type,
+                },
               }
             : m
         ),
@@ -111,6 +170,11 @@ export function useAgent() {
 
   const sendMessage = useCallback(async (payload) => {
     const sessionId = getOrCreateSessionId()
+    const arch = payload._architecture || 'single'
+    const isMulti = arch === 'multi' || arch === 'crew'
+    let streamFn = streamAgent
+    if (arch === 'multi') streamFn = streamMultiAgent
+    else if (arch === 'crew') streamFn = streamCrewAgent
 
     setState((prev) => ({
       ...prev,
@@ -123,8 +187,11 @@ export function useAgent() {
           content: '',
           streaming: true,
           agentMode: true,
+          isMultiAgent: isMulti,
           thoughts: [],
           toolCalls: [],
+          handoffs: [],
+          triage: null,
           latency_ms: null,
           budgetHit: false,
         },
@@ -132,9 +199,11 @@ export function useAgent() {
     }))
 
     abortRef.current = new AbortController()
+    // Remove internal key before sending to backend
+    const { _architecture, ...backendPayload } = payload
     try {
-      for await (const event of streamAgent(
-        { ...payload, session_id: sessionId },
+      for await (const event of streamFn(
+        { ...backendPayload, session_id: sessionId },
         abortRef.current.signal
       )) {
         setState((prev) => ({
@@ -169,3 +238,4 @@ export function useAgent() {
     clearMessages,
   }
 }
+

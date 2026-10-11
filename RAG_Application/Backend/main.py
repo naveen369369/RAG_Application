@@ -739,6 +739,79 @@ def agent_stream(request: AgentRequest):
     return StreamingResponse(_generate(), media_type="application/x-ndjson")
 
 
+@app.post("/agent/multi-stream", tags=["Agent"])
+def agent_multi_stream(request: AgentRequest):
+    """
+    Run the Orchestrator/Multi-Agent and stream NDJSON events.
+
+    Same event types as /agent/stream, plus:
+      {"event":"handoff","from_agent":"orchestrator","to_agent":"triage_worker","tokens_sent":N}
+      {"event":"triage_complete","agent":"triage_worker","ticket_type":"...","complexity":"..."}
+      {"event":"handoff","from_agent":"triage_worker","to_agent":"policy_worker","tokens_sent":N}
+      {"event":"orchestrator_done","agent":"orchestrator","latency_ms":N,"handoff_count":2}
+
+    All existing events (thought, tool_start, tool_result, token, done) also
+    carry an "agent" field identifying which worker emitted them.
+    """
+    pipeline = get_pipeline()
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question must not be empty.")
+
+    from agent.multi_agent_orchestrator import stream_multi_agent
+    import uuid
+    trace_id = str(uuid.uuid4())
+
+    def _generate():
+        for line in stream_multi_agent(
+            pipeline=pipeline,
+            question=request.question,
+            customer_id=request.customer_id,
+            item_status=request.item_status,
+            session_id=request.session_id,
+            temperature=request.temperature,
+            budget_config=request.budget_config,
+            session_store=app_state.session_store,
+            long_term=app_state.long_term_memory,
+            langfuse_trace_id=trace_id,
+        ):
+            yield line + "\n"
+
+    return StreamingResponse(_generate(), media_type="application/x-ndjson")
+
+
+@app.post("/agent/crew-stream", tags=["Agent"])
+def agent_crew_stream(request: AgentRequest):
+    """
+    Run the CrewAI Multi-Agent system (Triage -> CRM/Database -> Policy Resolution)
+    and stream NDJSON events to the UI.
+    """
+    pipeline = get_pipeline()
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question must not be empty.")
+
+    from agent.crew_orchestrator import stream_crew_agent
+    import uuid
+    trace_id = str(uuid.uuid4())
+
+    def _generate():
+        for line in stream_crew_agent(
+            pipeline=pipeline,
+            question=request.question,
+            customer_id=request.customer_id,
+            item_status=request.item_status,
+            session_id=request.session_id,
+            temperature=request.temperature,
+            budget_config=request.budget_config,
+            session_store=app_state.session_store,
+            long_term=app_state.long_term_memory,
+            langfuse_trace_id=trace_id,
+        ):
+            yield line + "\n"
+
+    return StreamingResponse(_generate(), media_type="application/x-ndjson")
+
+
+
 @app.post("/workflow/stream", tags=["Workflow"])
 def workflow_stream(request: WorkflowRequest):
     """
@@ -890,6 +963,33 @@ def run_security_eval():
     """
     from eval.security_tests import run_security_tests
     return run_security_tests()
+
+
+# ---------------------------------------------------------------------------
+# Multi-Agent vs Single-Agent Race Evaluation (Week-7)
+# ---------------------------------------------------------------------------
+
+@app.get("/agent/multi-agent-eval", tags=["Agent Eval"])
+def run_multi_agent_eval_endpoint(refresh: bool = False):
+    """
+    Run evaluation: Single Agent vs Orchestrator/Multi-Agent.
+    Uses the exact 10 ticket cases and live agents/retrieval.
+    """
+    pipeline = get_pipeline()
+    from eval.multi_agent_eval import run_multi_agent_eval
+    return run_multi_agent_eval(pipeline=pipeline, force_refresh=refresh)
+
+
+@app.post("/agent/multi-agent-eval/run", tags=["Agent Eval"])
+def run_multi_agent_eval_live():
+    """
+    Force run a full live evaluation across all 10 tickets for Single Agent and Multi-Agent.
+    Executes live tool calls, updates race_table.md, handoffs.log, failure_case.md, and verdict.md.
+    """
+    pipeline = get_pipeline()
+    from eval.multi_agent_eval import run_live_multi_agent_eval
+    return run_live_multi_agent_eval(pipeline=pipeline)
+
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,9 @@ import {
   AlertTriangle,
   Copy,
   Check,
+  ArrowRight,
+  GitBranch,
+  Tag,
 } from 'lucide-react'
 import { MetadataBadges } from './MetadataBadges'
 import { SourcePanel } from './SourcePanel'
@@ -56,6 +59,45 @@ export function MessageBubble({ message }) {
       </div>
 
       <div className={`max-w-[85%] sm:max-w-[80%] flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
+        {/* Multi-agent handoff pipeline */}
+        {message.isMultiAgent && message.handoffs && message.handoffs.length > 0 && (
+          <div className="w-full mb-2">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <GitBranch className="w-3 h-3 text-indigo-400 flex-shrink-0" />
+              {message.handoffs.map((h, i) => (
+                <span key={i} className="flex items-center gap-1 text-[10px]">
+                  <span className="bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded font-medium">
+                    {h.from}
+                  </span>
+                  <ArrowRight className="w-2.5 h-2.5 text-slate-300" />
+                  <span className="bg-indigo-100 text-indigo-700 border border-indigo-200 px-1.5 py-0.5 rounded font-semibold">
+                    {h.to}
+                  </span>
+                  <span className="text-slate-400">({h.tokens}t)</span>
+                  {i < message.handoffs.length - 1 && (
+                    <ArrowRight className="w-2.5 h-2.5 text-slate-200 mx-0.5" />
+                  )}
+                </span>
+              ))}
+            </div>
+            {/* Triage badge */}
+            {message.triage && (
+              <div className="flex items-center gap-2 mt-1.5">
+                <Tag className="w-3 h-3 text-amber-500" />
+                <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-semibold">
+                  {message.triage.ticket_type}
+                </span>
+                <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                  {message.triage.complexity}
+                </span>
+                {message.triage.summary && (
+                  <span className="text-[10px] text-slate-400 truncate max-w-[220px]">{message.triage.summary}</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Agent thoughts trace if present */}
         {isAgent && message.thoughts && message.thoughts.length > 0 && (
           <div className="w-full mb-1">
@@ -89,9 +131,11 @@ export function MessageBubble({ message }) {
                   <span className="text-xs font-medium text-slate-500 animate-pulse">
                     {runningTool
                       ? `Executing ${runningTool.tool}…`
-                      : isAgent
-                        ? 'Agent is thinking & searching documents…'
-                        : 'Searching knowledge base & generating answer…'}
+                      : message.isMultiAgent
+                        ? 'Orchestrator routing to workers…'
+                        : isAgent
+                          ? 'Agent is thinking & searching documents…'
+                          : 'Searching knowledge base & generating answer…'}
                   </span>
                 </div>
               )}

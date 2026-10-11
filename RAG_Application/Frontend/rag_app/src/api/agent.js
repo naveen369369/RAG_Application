@@ -1,15 +1,10 @@
 import { API_BASE } from './client'
 
 /**
- * Stream agent events from /agent/stream.
- * Yields parsed event objects:
- *   {event:"start"} {event:"thought",text} {event:"tool_start",tool,args}
- *   {event:"tool_result",tool,result} {event:"token",t}
- *   {event:"done",latency_ms,tool_calls_made,budget}
- *   {event:"budget_hit",reason,partial_answer} {event:"error",detail}
+ * Generic NDJSON stream reader — used by both single and multi-agent.
  */
-export async function* streamAgent(payload, signal) {
-  const res = await fetch(`${API_BASE}/agent/stream`, {
+async function* _streamNDJSON(endpoint, payload, signal) {
+  const res = await fetch(`${API_BASE}${endpoint}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -26,7 +21,7 @@ export async function* streamAgent(payload, signal) {
     if (done) break
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split('\n')
-    buffer = lines.pop() // keep partial line
+    buffer = lines.pop()
     for (const line of lines) {
       const trimmed = line.trim()
       if (!trimmed) continue
@@ -38,3 +33,29 @@ export async function* streamAgent(payload, signal) {
     }
   }
 }
+
+/**
+ * Stream Single-Agent events from /agent/stream.
+ */
+export async function* streamAgent(payload, signal) {
+  yield* _streamNDJSON('/agent/stream', payload, signal)
+}
+
+/**
+ * Stream Multi-Agent (Orchestrator-Worker) events from /agent/multi-stream.
+ * Emits all standard events PLUS:
+ *   {event:"handoff", from_agent, to_agent, tokens_sent}
+ *   {event:"triage_complete", agent:"triage_worker", ticket_type, complexity}
+ *   {event:"orchestrator_done", agent:"orchestrator", handoff_count, ...}
+ */
+export async function* streamMultiAgent(payload, signal) {
+  yield* _streamNDJSON('/agent/multi-stream', payload, signal)
+}
+
+/**
+ * Stream CrewAI Multi-Agent (Triage -> CRM/Database -> Policy Resolution) events from /agent/crew-stream.
+ */
+export async function* streamCrewAgent(payload, signal) {
+  yield* _streamNDJSON('/agent/crew-stream', payload, signal)
+}
+

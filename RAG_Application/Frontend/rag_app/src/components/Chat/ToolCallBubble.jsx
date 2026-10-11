@@ -35,6 +35,33 @@ export function getToolMeta(toolName = '') {
       pillColor: 'bg-indigo-100 text-indigo-800',
     }
   }
+  if (name === 'database_schema' || name.includes('schema')) {
+    return {
+      category: 'DB Schema',
+      typeLabel: 'Schema Tool',
+      icon: Database,
+      badgeColor: 'bg-amber-50 text-amber-800 border-amber-200',
+      pillColor: 'bg-amber-100 text-amber-900',
+    }
+  }
+  if (name === 'db_query' || name.includes('query')) {
+    return {
+      category: 'SQL Query',
+      typeLabel: 'Database Query',
+      icon: Database,
+      badgeColor: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+      pillColor: 'bg-emerald-100 text-emerald-900',
+    }
+  }
+  if (name === 'list_tickets_and_orders' || name.includes('list_tickets')) {
+    return {
+      category: 'CRM Records',
+      typeLabel: 'CRM Database',
+      icon: Database,
+      badgeColor: 'bg-teal-50 text-teal-700 border-teal-200',
+      pillColor: 'bg-teal-100 text-teal-800',
+    }
+  }
   if (name === 'customer_lookup') {
     return {
       category: 'Customer Profile',
@@ -105,6 +132,14 @@ export default function ToolCallBubble({ toolCalls = [], onOpenModal }) {
         if (tc.tool === 'rag_retrieval') {
           const count = tc.result?.chunks?.length || 0
           summary = count > 0 ? `${count} chunks retrieved` : 'knowledge searched'
+        } else if (tc.tool === 'database_schema') {
+          const tCount = tc.result?.tables?.length || 0
+          summary = tCount > 0 ? `${tCount} tables schema` : 'schema inspected'
+        } else if (tc.tool === 'db_query') {
+          const rCount = tc.result?.row_count ?? (tc.result?.rows?.length || 0)
+          summary = tc.result?.success ? `${rCount} rows returned` : 'query executed'
+        } else if (tc.tool === 'list_tickets_and_orders') {
+          summary = tc.result?.summary || 'Tickets & Orders listed'
         } else if (tc.tool === 'ticket_lookup') {
           summary = tc.result?.found ? `Ticket #${tc.result?.ticket_id || tc.args?.ticket_id}` : 'Ticket searched'
         } else if (tc.tool === 'order_lookup') {

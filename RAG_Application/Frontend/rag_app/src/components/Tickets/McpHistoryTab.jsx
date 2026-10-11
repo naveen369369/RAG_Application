@@ -453,7 +453,7 @@ export default function McpHistoryTab({ initialTicketId = 'TCK-1004', dbTickets 
             {/* Tool categories */}
             <div className="space-y-2">
               {Object.entries(server1?.tool_categories || {
-                'CRM': ['ticket_lookup', 'order_lookup', 'customer_lookup'],
+                'CRM': ['ticket_lookup', 'order_lookup', 'list_tickets_and_orders', 'customer_lookup'],
                 'RAG / Documents': ['rag_retrieval', 'route_namespace', 'summarize_document', 'multi_namespace_search', 'inspect_documents'],
                 'Admin': ['run_evaluation'],
               }).map(([cat, tools]) => (
