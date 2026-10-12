@@ -4,19 +4,20 @@ Database Session & Connection Management
 Supports Microsoft SQL Server with automatic fallback to SQLite for local development.
 
 Configurable via .env:
-  # Option 1: Full Connection String
-  DATABASE_URL=mssql+pyodbc://username:password@server_name/database_name?driver=ODBC+Driver+17+for+SQL+Server
-  
-  # Option 2: SQL Server Components
+  # Option A: Windows Integrated Authentication (named instance safe)
+  SQL_SERVER_HOST=.\\SQLEXPRESS
+  SQL_SERVER_DATABASE=Rag_Test
+  SQL_SERVER_TRUSTED_CONNECTION=yes
+
+  # Option B: SQL auth
   SQL_SERVER_HOST=localhost
   SQL_SERVER_DATABASE=SupportCRM
   SQL_SERVER_USER=sa
   SQL_SERVER_PASSWORD=your_password
-  SQL_SERVER_DRIVER=ODBC Driver 17 for SQL Server
-  SQL_SERVER_TRUSTED_CONNECTION=yes   # for Windows Authentication
 """
 import os
 import logging
+import urllib.parse
 from pathlib import Path
 from typing import Generator
 from dotenv import load_dotenv
@@ -33,22 +34,36 @@ logger = logging.getLogger(__name__)
 Base = declarative_base()
 
 def _get_database_url() -> str:
-    # 1. Direct explicit DATABASE_URL
+    # 1. Direct explicit DATABASE_URL (user-supplied, used as-is)
     db_url = os.getenv("DATABASE_URL", "").strip()
     if db_url:
         return db_url
 
-    # 2. Check for SQL Server environment variables
+    # 2. SQL Server via component env vars
     sql_host = os.getenv("SQL_SERVER_HOST", "").strip()
     sql_db = os.getenv("SQL_SERVER_DATABASE", "").strip()
     if sql_host and sql_db:
-        driver = os.getenv("SQL_SERVER_DRIVER", "ODBC Driver 17 for SQL Server").replace(" ", "+")
+        driver = os.getenv("SQL_SERVER_DRIVER", "ODBC Driver 17 for SQL Server")
         trusted = os.getenv("SQL_SERVER_TRUSTED_CONNECTION", "no").lower() in ("yes", "true", "1")
         if trusted:
-            return f"mssql+pyodbc://@{sql_host}/{sql_db}?driver={driver}&trusted_connection=yes"
+            # Use odbc_connect= so backslashes in named instances (.\SQLEXPRESS) are handled safely
+            odbc = (
+                f"DRIVER={{{driver}}};"
+                f"SERVER={sql_host};"
+                f"DATABASE={sql_db};"
+                f"Trusted_Connection=yes;"
+            )
+            return f"mssql+pyodbc:///?odbc_connect={urllib.parse.quote_plus(odbc)}"
         user = os.getenv("SQL_SERVER_USER", "sa")
         password = os.getenv("SQL_SERVER_PASSWORD", "")
-        return f"mssql+pyodbc://{user}:{password}@{sql_host}/{sql_db}?driver={driver}"
+        odbc = (
+            f"DRIVER={{{driver}}};"
+            f"SERVER={sql_host};"
+            f"DATABASE={sql_db};"
+            f"UID={user};"
+            f"PWD={password};"
+        )
+        return f"mssql+pyodbc:///?odbc_connect={urllib.parse.quote_plus(odbc)}"
 
     # 3. Default fallback to local SQLite
     data_dir = Path(__file__).resolve().parent.parent / "data"
